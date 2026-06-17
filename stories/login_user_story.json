@@ -1,0 +1,82 @@
+{
+  "id": "login_001",
+  "title": "User Login Flow",
+  "description": "As a registered user, I want to log in with valid credentials so I can access my dashboard.",
+  "priority": "high",
+  "tags": ["authentication", "smoke"],
+  "pages": ["LoginPage", "DashboardPage"],
+  "preconditions": [
+    "User has a registered account with email: test@example.com",
+    "Application is accessible at the configured base URL"
+  ],
+  "steps": [
+    {
+      "id": "step_01",
+      "action": "navigate",
+      "target": "/login",
+      "value": "",
+      "description": "Navigate to the login page"
+    },
+    {
+      "id": "step_02",
+      "action": "fill",
+      "target": "#email",
+      "value": "test@example.com",
+      "description": "Enter registered email address"
+    },
+    {
+      "id": "step_03",
+      "action": "fill",
+      "target": "#password",
+      "value": "SecurePass123!",
+      "description": "Enter valid password"
+    },
+    {
+      "id": "step_04",
+      "action": "click",
+      "target": "button[type='submit']",
+      "value": "",
+      "description": "Click the login button"
+    },
+    {
+      "id": "step_05",
+      "action": "assert_url",
+      "target": "/dashboard",
+      "value": "",
+      "description": "Verify redirect to dashboard after login"
+    },
+    {
+      "id": "step_06",
+      "action": "assert_visible",
+      "target": "#welcome-banner",
+      "value": "",
+      "description": "Verify welcome banner is displayed on dashboard"
+    }
+  ],
+  "expected_outcomes": [
+    "User is authenticated and redirected to /dashboard",
+    "Welcome banner is visible"
+  ],
+  "negative_scenarios": [
+    {
+      "id": "neg_01",
+      "title": "Invalid credentials rejected",
+      "steps": [
+        "Navigate to /login",
+        "Enter invalid email: wrong@example.com",
+        "Enter invalid password: wrongpass",
+        "Click submit"
+      ],
+      "expected": "Error message displayed, user remains on login page"
+    },
+    {
+      "id": "neg_02",
+      "title": "Empty form submission blocked",
+      "steps": [
+        "Navigate to /login",
+        "Click submit without filling any fields"
+      ],
+      "expected": "Validation errors shown for required fields"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "browser": {
+    "browser": "chromium",
+    "headless": false,
+    "slow_mo": 0,
+    "timeout": 30000,
+    "viewport": { "width": 1280, "height": 720 }
+  },
+  "app": {
+    "base_url": "http://localhost:3000",
+    "environment": "local",
+    "implicit_wait": 10,
+    "explicit_wait": 30,
+    "screenshot_on_failure": true
+  },
+  "memory_db_path": "memory/framework_memory.json",
+  "reports_dir": "reports",
+  "stories_dir": "stories"
+}

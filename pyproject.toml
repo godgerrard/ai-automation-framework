@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-automation-framework"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=8.1.0,<9",
+    "pytest-html>=4.1.0",
+    "playwright>=1.44.0",
+    "fastmcp>=2.0.0,<3",
+    "click>=8.1.7",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.7.0",
+    "filelock>=3.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-html>=4.1.0",
+]
+
+[project.scripts]
+framework = "cli.commands:framework"
+
+[tool.setuptools]
+py-modules = ["config"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "cli*", "mcp_server*", "utils*", "locators*", "pages*", "services*"]
+exclude = ["tests*", "stories*", "memory*", "reports*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "authentication: login and auth related tests",
+    "smoke: fast critical-path checks",
+    "checkout: checkout flow tests",
+    "payment: payment processing tests",
+    "regression: full regression suite",
+    "api: backend API tests",
+]

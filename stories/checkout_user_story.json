@@ -1,0 +1,101 @@
+{
+  "id": "checkout_001",
+  "title": "E-Commerce Checkout Flow",
+  "description": "As a logged-in customer, I want to complete a purchase so that I receive my order confirmation.",
+  "priority": "critical",
+  "tags": ["checkout", "payment", "regression"],
+  "pages": ["ProductPage", "CartPage", "CheckoutPage", "OrderConfirmationPage"],
+  "preconditions": [
+    "User is authenticated (session cookie set via API fixture)",
+    "At least one product with SKU 'DEMO-001' is in-stock"
+  ],
+  "steps": [
+    {
+      "id": "step_01",
+      "action": "navigate",
+      "target": "/products",
+      "value": "",
+      "description": "Navigate to products listing page"
+    },
+    {
+      "id": "step_02",
+      "action": "click",
+      "target": ".product-card:first-child .btn-add-to-cart",
+      "value": "",
+      "description": "Add first available product to cart"
+    },
+    {
+      "id": "step_03",
+      "action": "assert_visible",
+      "target": ".cart-notification",
+      "value": "",
+      "description": "Verify cart notification appears"
+    },
+    {
+      "id": "step_04",
+      "action": "navigate",
+      "target": "/cart",
+      "value": "",
+      "description": "Navigate to the cart page"
+    },
+    {
+      "id": "step_05",
+      "action": "click",
+      "target": "button.proceed-checkout",
+      "value": "",
+      "description": "Click Proceed to Checkout"
+    },
+    {
+      "id": "step_06",
+      "action": "fill",
+      "target": "#shipping-address",
+      "value": "123 Test Street, Test City, TC 12345",
+      "description": "Enter shipping address"
+    },
+    {
+      "id": "step_07",
+      "action": "fill",
+      "target": "#card-number",
+      "value": "4111111111111111",
+      "description": "Enter test credit card number (Visa test card)"
+    },
+    {
+      "id": "step_08",
+      "action": "click",
+      "target": "button.place-order",
+      "value": "",
+      "description": "Click Place Order"
+    },
+    {
+      "id": "step_09",
+      "action": "assert_url",
+      "target": "/order-confirmation",
+      "value": "",
+      "description": "Verify navigation to order confirmation page"
+    },
+    {
+      "id": "step_10",
+      "action": "assert_visible",
+      "target": ".order-id",
+      "value": "",
+      "description": "Verify order ID is displayed on confirmation page"
+    }
+  ],
+  "expected_outcomes": [
+    "Order is placed successfully",
+    "User is redirected to /order-confirmation",
+    "Order confirmation ID is visible on page"
+  ],
+  "negative_scenarios": [
+    {
+      "id": "neg_01",
+      "title": "Invalid payment card rejected",
+      "steps": [
+        "Complete all checkout steps",
+        "Enter invalid card number: 1234567890123456",
+        "Click Place Order"
+      ],
+      "expected": "Payment error message displayed, order is NOT created"
+    }
+  ]
+}
