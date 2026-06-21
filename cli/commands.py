@@ -20,13 +20,73 @@ from urllib.parse import urlparse
 import click
 
 from core.memory_engine import MemoryEngine
-from utils.helpers import APICodeGenerator, CodeGenerator, StoryParser
+from utils.helpers import APICodeGenerator, CodeGenerator, ProjectScaffolder, StoryParser
 
 
 @click.group()
 @click.version_option("1.0.0", prog_name="framework")
 def framework() -> None:
     """AI-Augmented Test Automation Framework CLI."""
+
+
+# ── init-project ──────────────────────────────────────────────────────────────
+
+@framework.command("init-project")
+@click.option("--url", required=True, help="Target application base URL (e.g. https://myapp.com)")
+@click.option("--name", required=True, help="Short project name used as file prefix (e.g. myapp)")
+@click.option(
+    "--type", "project_type",
+    type=click.Choice(["web", "api", "both"]),
+    default="both",
+    show_default=True,
+    help="Scaffold web (Playwright), api (HTTP), or both.",
+)
+def init_project(url: str, name: str, project_type: str) -> None:
+    """Scaffold a complete test project skeleton for a new application.
+
+    Creates ready-to-edit locators, page objects, story files, and test stubs
+    for the target URL.  All generated files are listed in .gitignore so they
+    never pollute the framework repo.
+
+    \b
+    Examples
+    --------
+    # Web + API skeleton (default)
+    framework init-project --url https://myapp.com --name myapp
+
+    # API-only skeleton
+    framework init-project --url https://api.myapp.com --name myapp --type api
+
+    \b
+    Next steps after scaffolding
+    ----------------------------
+    1. Inspect the target DOM and update locators/<name>_locators.py
+    2. Extend pages/<name>_page.py with app-specific methods
+    3. Set credentials via env vars (see the generated test file header)
+    4. Run: framework run --suite tests/ --base-url <url>
+    """
+    scaffolder = ProjectScaffolder(url, name, project_type)
+    created = scaffolder.scaffold()
+
+    if not created:
+        click.echo(click.style("  [skipped] All files already exist — nothing to create.", fg="yellow"))
+        return
+
+    click.echo()
+    for path in created:
+        click.echo(click.style(f"  [created] {path}", fg="green"))
+
+    click.echo()
+    click.echo(click.style("Next steps:", bold=True))
+    click.echo(f"  1. Update locators in  locators/{name}_locators.py")
+    if project_type in ("web", "both"):
+        click.echo(f"  2. Set credentials:    export {name.upper()}_USERNAME=... && export {name.upper()}_PASSWORD=...")
+    click.echo(f"  3. Run tests:          framework run --suite tests/ --base-url {url}")
+    click.echo()
+    click.echo(
+        click.style("Note: ", fg="yellow", bold=True)
+        + "Generated files are .gitignored. Commit them only in your own fork/branch."
+    )
 
 
 # ── generate-page ─────────────────────────────────────────────────────────────

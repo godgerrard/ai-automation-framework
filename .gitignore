@@ -21,7 +21,17 @@ htmlcov/
 .coverage
 coverage.xml
 
-# Framework runtime artefacts
+# ── Project-specific generated files ──────────────────────────────────────────
+# Scaffolded per target application via `framework init-project`.
+# Never commit these to the shared framework repo — each client keeps their own
+# fork/branch/directory for their project files.
+locators/[!_]*.py
+pages/[!_]*.py
+tests/workflows/test_*.py
+tests/api/test_*.py
+stories/*.json
+
+# ── Framework runtime artefacts ───────────────────────────────────────────────
 memory/framework_memory.json
 memory/*.lock
 reports/report.html

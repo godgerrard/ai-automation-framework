@@ -59,8 +59,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     parser.addoption(
         "--api-url",
-        default="https://jsonplaceholder.typicode.com",
-        help="Base URL for API test suites (default: jsonplaceholder.typicode.com).",
+        default=CONFIG.app.base_url,
+        help="Base URL for API test suites. Defaults to --app-url value.",
     )
 
 

@@ -1,0 +1,63 @@
+{
+  "_comment": "TEMPLATE — copy this to stories/<your_app>_story.json and update all fields.",
+  "id": "your_app_login_001",
+  "title": "User Login",
+  "description": "As a registered user I want to log in so I can access the application.",
+  "priority": "critical",
+  "tags": ["authentication", "smoke"],
+  "base_url": "https://your-application.com",
+  "pages": ["LoginPage"],
+  "preconditions": ["Browser is open", "User account exists"],
+  "steps": [
+    {
+      "id": "step_01",
+      "action": "navigate",
+      "target": "/login",
+      "description": "Open the login page"
+    },
+    {
+      "id": "step_02",
+      "action": "fill",
+      "target": "[data-test='username']",
+      "value": "standard_user",
+      "description": "Enter username — replace selector and value"
+    },
+    {
+      "id": "step_03",
+      "action": "fill",
+      "target": "[data-test='password']",
+      "value": "secret_sauce",
+      "description": "Enter password — replace selector and value"
+    },
+    {
+      "id": "step_04",
+      "action": "click",
+      "target": "[data-test='login-button']",
+      "description": "Click the login button — replace selector"
+    },
+    {
+      "id": "step_05",
+      "action": "assert_url",
+      "target": "/dashboard",
+      "description": "Verify redirect to dashboard — replace path"
+    }
+  ],
+  "expected_outcomes": [
+    "User is redirected to /dashboard",
+    "No error message is shown"
+  ],
+  "negative_scenarios": [
+    {
+      "id": "neg_01",
+      "title": "Empty credentials show validation error",
+      "steps": ["Leave fields empty", "Click login"],
+      "expected": "Validation error message visible"
+    },
+    {
+      "id": "neg_02",
+      "title": "Wrong password shows auth error",
+      "steps": ["Enter valid username", "Enter wrong password", "Click login"],
+      "expected": "Authentication error visible, user stays on login page"
+    }
+  ]
+}

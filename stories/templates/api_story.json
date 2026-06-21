@@ -1,0 +1,79 @@
+{
+  "_comment": "TEMPLATE — copy to stories/<your_app>_api_story.json and update all fields.",
+  "id": "your_app_api_001",
+  "title": "User Resource CRUD",
+  "description": "Verifies the full CRUD lifecycle for the /users resource.",
+  "base_url": "https://your-api.com",
+  "tags": ["api", "smoke", "regression"],
+  "endpoints": [
+    {
+      "id": "list_resources",
+      "method": "GET",
+      "path": "/users",
+      "description": "List all users — expect 200 and non-empty array",
+      "expected_status": 200,
+      "expected_schema": ["id", "name", "email"]
+    },
+    {
+      "id": "get_single_resource",
+      "method": "GET",
+      "path": "/users/1",
+      "description": "Fetch a single user by ID",
+      "expected_status": 200,
+      "expected_schema": ["id", "name", "email"]
+    },
+    {
+      "id": "create_resource",
+      "method": "POST",
+      "path": "/users",
+      "body": {"name": "Test User", "email": "test@example.com"},
+      "description": "Create a new user — expect 201 with assigned ID",
+      "expected_status": 201,
+      "expected_schema": ["id"]
+    },
+    {
+      "id": "update_resource",
+      "method": "PUT",
+      "path": "/users/1",
+      "body": {"name": "Updated User", "email": "updated@example.com"},
+      "description": "Replace a user record",
+      "expected_status": 200,
+      "expected_schema": ["id", "name"]
+    },
+    {
+      "id": "patch_resource",
+      "method": "PATCH",
+      "path": "/users/1",
+      "body": {"name": "Patched Name"},
+      "description": "Partially update a user record",
+      "expected_status": 200,
+      "expected_schema": ["name"]
+    },
+    {
+      "id": "delete_resource",
+      "method": "DELETE",
+      "path": "/users/1",
+      "description": "Delete a user — expect 200 or 204",
+      "expected_status": 200
+    }
+  ],
+  "negative_scenarios": [
+    {
+      "id": "neg_01",
+      "title": "Missing required field returns 400",
+      "method": "POST",
+      "path": "/users",
+      "body": {},
+      "expected_status": 400,
+      "expected": "Validation error for missing required fields"
+    },
+    {
+      "id": "neg_02",
+      "title": "Nonexistent resource returns 404",
+      "method": "GET",
+      "path": "/users/999999",
+      "expected_status": 404,
+      "expected": "Resource not found"
+    }
+  ]
+}
