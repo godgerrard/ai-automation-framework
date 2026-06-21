@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "pydantic>=2.7.0",
     "filelock>=3.13.0",
+    "allure-pytest>=2.13.0",
 ]
 
 [project.optional-dependencies]
@@ -42,4 +43,6 @@ markers = [
     "payment: payment processing tests",
     "regression: full regression suite",
     "api: REST API tests (no browser required)",
+    "negative: negative / error scenario tests",
+    "e2e: end-to-end workflow tests",
 ]

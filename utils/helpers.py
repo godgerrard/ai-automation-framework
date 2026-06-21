@@ -391,6 +391,538 @@ def _timestamp() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+# ── Natural Language Story Parser ─────────────────────────────────────────────
+
+class NaturalLanguageStoryParser:
+    """Convert plain-English test requirements to structured story JSON.
+
+    Handles free-form English, bullet lists, numbered lists, and Gherkin-style
+    Given/When/Then. Output is story JSON consumable by AutoDOMMapper and CodeGenerator.
+    """
+
+    _ACTION_PATTERNS: List[tuple] = [
+        (["navigate to", "go to", "open", "visit", "load", "access", "browse to"], "navigate"),
+        (["enter", "fill in", "fill", "type", "input", "set", "write", "provide"], "fill"),
+        (["click", "press", "tap", "select", "choose", "hit", "submit", "push", "tap on"], "click"),
+        (["log in", "login", "sign in", "signin", "authenticate", "log into"], "login"),
+        (["log out", "logout", "sign out", "signout"], "logout"),
+        (["see", "verify", "check", "confirm", "assert", "expect", "should see",
+          "ensure", "validate", "observe", "notice"], "assert_visible"),
+        (["redirect", "land on", "be on", "url should", "should be taken to",
+          "taken to", "be directed to"], "assert_url"),
+    ]
+
+    _STOP_WORDS = {
+        "as", "a", "an", "the", "i", "user", "admin", "manager", "want", "to", "be",
+        "able", "and", "or", "with", "my", "their", "our", "this", "that", "it",
+        "is", "are", "was", "were", "will", "would", "should", "can", "could",
+        "have", "has", "had", "do", "does", "did",
+    }
+
+    _NEGATIVE_MARKERS = [
+        "negative", "error case", "invalid", "fail", "reject", "deny",
+        "incorrect", "wrong", "bad", "missing", "empty", "not found",
+    ]
+
+    def parse(self, text: str) -> List[Dict[str, Any]]:
+        """Parse a block of English text into one or more story dicts."""
+        blocks = self._split_stories(text)
+        return [self._parse_one(block.strip(), idx) for idx, block in enumerate(blocks, 1)
+                if block.strip()]
+
+    def _split_stories(self, text: str) -> List[str]:
+        return re.split(
+            r'\n\s*---+\s*\n|\n\s*[Ss]tory\s+\d+\s*:\s*\n|\n\s*[Ss]cenario\s+\d+\s*:\s*\n',
+            text
+        )
+
+    def _parse_one(self, text: str, index: int) -> Dict[str, Any]:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            return {}
+
+        title, description, actor = self._extract_header(lines[0])
+        story_id = self._make_id(title, index)
+        steps: List[Dict] = []
+        step_num = 1
+
+        content_lines = lines[1:] if len(lines) > 1 else lines
+        for line in content_lines:
+            parsed = self._parse_line(line)
+            if not parsed:
+                continue
+            expanded = self._expand_compound(parsed, step_num)
+            for s in expanded:
+                steps.append(s)
+                step_num += 1
+
+        if not steps:
+            steps = [{"id": "step_01", "action": "navigate", "target": "TODO__NAVIGATE",
+                       "value": "", "description": "Navigate to application"}]
+
+        return {
+            "id": story_id,
+            "title": title,
+            "description": description,
+            "actor": actor,
+            "tags": self._infer_tags(title + " " + text),
+            "base_url": "",
+            "steps": steps,
+            "negative_scenarios": self._extract_negatives(text),
+        }
+
+    def _extract_header(self, line: str) -> tuple:
+        m = re.match(
+            r'[Aa]s (?:a[n]? )?(.+?)[,.]?\s+[Ii]\s+want(?:\s+to)?\s+(.+?)(?:\s+so that.+)?$',
+            line
+        )
+        if m:
+            actor = m.group(1).strip()
+            intent = m.group(2).strip()[:80]
+            return f"{actor.title()} — {intent}", line.strip(), actor
+
+        m = re.match(r'[Tt]est(?:ing)?\s+that\s+(.+)', line)
+        if m:
+            return m.group(1).strip()[:80], line.strip(), "user"
+
+        return line.strip()[:80], line.strip(), "user"
+
+    def _make_id(self, title: str, index: int) -> str:
+        clean = re.sub(r"[^a-z0-9\s]", "", title.lower())
+        words = [w for w in clean.split() if w not in self._STOP_WORDS][:4]
+        slug = "_".join(words) if words else "story"
+        return f"{slug}_{index:03d}"
+
+    def _parse_line(self, line: str) -> Dict | None:
+        line = re.sub(r"^[\d]+[.)]\s*|^[-*•»]\s*|^(Given|When|Then|And)\s+", "", line).strip()
+        if not line or line.endswith(":") or line.startswith("#"):
+            return None
+
+        action, value = self._classify(line)
+        return {
+            "id": "step_XX",
+            "action": action,
+            "target": f"TODO__{action.upper()}",
+            "value": value,
+            "description": line,
+        }
+
+    def _classify(self, line: str) -> tuple:
+        low = line.lower()
+        for patterns, action in self._ACTION_PATTERNS:
+            if any(p in low for p in patterns):
+                return action, self._extract_value(line)
+        return "assert_visible", ""
+
+    def _extract_value(self, line: str) -> str:
+        m = re.search(r'["\']([^"\']+)["\']', line)
+        if m:
+            return m.group(1)
+        m = re.search(r'\b(?:with|using|value|text)\s+["\']?([A-Za-z0-9@._-]+)["\']?', line.lower())
+        if m:
+            return m.group(1)
+        return ""
+
+    def _expand_compound(self, step: Dict, num: int) -> List[Dict]:
+        action = step.get("action")
+        base = {k: v for k, v in step.items() if k != "id"}
+
+        if action == "login":
+            return [
+                {**base, "id": f"step_{num:02d}", "action": "fill",
+                 "target": "TODO__USERNAME_FIELD", "value": "TODO_USERNAME",
+                 "description": "Enter username"},
+                {**base, "id": f"step_{num+1:02d}", "action": "fill",
+                 "target": "TODO__PASSWORD_FIELD", "value": "TODO_PASSWORD",
+                 "description": "Enter password"},
+                {**base, "id": f"step_{num+2:02d}", "action": "click",
+                 "target": "TODO__LOGIN_BUTTON", "description": "Click login button"},
+                {**base, "id": f"step_{num+3:02d}", "action": "assert_url",
+                 "target": "/dashboard", "description": "Verify redirect to dashboard"},
+            ]
+
+        if action == "logout":
+            return [
+                {**base, "id": f"step_{num:02d}", "action": "click",
+                 "target": "TODO__LOGOUT_LINK", "description": "Click logout"},
+                {**base, "id": f"step_{num+1:02d}", "action": "assert_url",
+                 "target": "/login", "description": "Verify redirect to login"},
+            ]
+
+        return [{**step, "id": f"step_{num:02d}"}]
+
+    def _infer_tags(self, text: str) -> List[str]:
+        text = text.lower()
+        tags: List[str] = ["smoke"]
+        if any(w in text for w in ("login", "logout", "auth", "sign in", "password", "credential")):
+            tags.append("authentication")
+        if any(w in text for w in ("checkout", "purchase", "payment", "order", "buy", "cart")):
+            tags.append("checkout")
+        if any(w in text for w in ("api", "endpoint", "rest", "http", "request", "response", "json")):
+            tags.append("api")
+        return tags
+
+    def _extract_negatives(self, text: str) -> List[Dict]:
+        negatives: List[Dict] = []
+        for marker in self._NEGATIVE_MARKERS:
+            for m in re.finditer(rf'{marker}[:\s]+([^\n.]+)', text.lower()):
+                desc = m.group(1).strip()[:80]
+                if len(desc) > 5:
+                    negatives.append({
+                        "id": f"neg_{len(negatives)+1:02d}",
+                        "title": f"Invalid — {desc}",
+                        "expected": "Error message displayed or action rejected",
+                    })
+        return negatives[:5]  # cap at 5 negative scenarios
+
+
+# ── DOM Prober (synchronous — for CLI use) ────────────────────────────────────
+
+class DOMProber:
+    """Synchronous Playwright DOM prober used by AutoDOMMapper in the CLI pipeline.
+
+    Uses sync_playwright so it runs in a normal function context (no asyncio needed).
+    The MCP server uses async_playwright; this is the CLI equivalent.
+    """
+
+    _JS_EXTRACT = """() => {
+        const sel = [
+            'button', 'a[href]', 'input:not([type="hidden"])', 'select',
+            'textarea', '[data-test]', '[data-testid]', '[aria-label]',
+            '[role="button"]', '[role="link"]', '[role="checkbox"]'
+        ].join(', ');
+        return Array.from(document.querySelectorAll(sel))
+            .filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            })
+            .slice(0, 80)
+            .map(el => ({
+                tag:         el.tagName.toLowerCase(),
+                id:          el.id || null,
+                dataTest:    el.getAttribute('data-test') || el.getAttribute('data-testid') || null,
+                ariaLabel:   el.getAttribute('aria-label') || null,
+                placeholder: el.getAttribute('placeholder') || null,
+                text:        (el.innerText || el.textContent || '').trim().slice(0, 80),
+                type:        el.getAttribute('type') || null,
+                name:        el.getAttribute('name') || null,
+                href:        el.getAttribute('href') || null,
+                className:   (el.className || '').toString().slice(0, 100),
+            }));
+    }"""
+
+    def probe(self, url: str, credentials: Dict | None = None) -> Dict[str, Any]:
+        """Navigate to url, optionally auto-login, return element list."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return {"status": "error", "error": "playwright not installed — run: pip install playwright && playwright install"}
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            try:
+                page.goto(url, wait_until="networkidle", timeout=30_000)
+
+                # Auto-login if we landed on a login page
+                if credentials and self._looks_like_login_page(page.url):
+                    self._try_login(page, credentials)
+                    page.wait_for_load_state("networkidle", timeout=15_000)
+
+                elements: List[Dict] = page.evaluate(self._JS_EXTRACT)
+                return {
+                    "status": "ok",
+                    "url": page.url,
+                    "title": page.title(),
+                    "elements": elements,
+                }
+            except Exception as exc:
+                return {"status": "error", "url": url, "error": str(exc)}
+            finally:
+                browser.close()
+
+    def _looks_like_login_page(self, url: str) -> bool:
+        return any(kw in url.lower() for kw in ("login", "signin", "sign-in", "auth"))
+
+    def _try_login(self, page: Any, creds: Dict) -> None:
+        username = creds.get("username", "")
+        password = creds.get("password", "")
+
+        for sel in ("[data-test='username']", "#username", "input[name='username']",
+                    "input[type='email']", "[placeholder*='username' i]", "[placeholder*='email' i]"):
+            if page.locator(sel).count() > 0:
+                page.locator(sel).fill(username)
+                break
+
+        for sel in ("[data-test='password']", "#password", "input[name='password']",
+                    "input[type='password']"):
+            if page.locator(sel).count() > 0:
+                page.locator(sel).fill(password)
+                break
+
+        for sel in ("[data-test='login-button']", "button[type='submit']",
+                    "input[type='submit']", "button:has-text('Login')", "button:has-text('Sign In')",
+                    "button:has-text('Log In')"):
+            if page.locator(sel).count() > 0:
+                page.locator(sel).click()
+                break
+
+
+# ── Auto DOM Mapper ───────────────────────────────────────────────────────────
+
+class AutoDOMMapper:
+    """Map story step descriptions to real DOM selectors by probing the live app.
+
+    Used exclusively by `framework build` — zero AI tokens.
+    Each page is probed once; results are cached for the duration of the build.
+    """
+
+    _STOP_WORDS = {
+        "a", "an", "the", "my", "your", "our", "with", "and", "or", "to", "for",
+        "in", "on", "of", "is", "are", "as", "user", "i", "want", "be", "able",
+        "should", "can", "do", "does", "have", "has", "get", "then", "after",
+        "before", "when", "that", "this", "it", "they", "their", "its",
+    }
+
+    _PATH_HINTS: Dict[str, str] = {
+        "login": "/login", "sign in": "/login", "signin": "/login",
+        "register": "/register", "signup": "/signup", "sign up": "/signup",
+        "dashboard": "/dashboard", "home": "/", "main": "/",
+        "profile": "/profile", "account": "/account", "settings": "/settings",
+        "users": "/users", "admin": "/admin", "checkout": "/checkout",
+        "cart": "/cart", "products": "/products", "items": "/items",
+        "orders": "/orders", "reports": "/reports",
+    }
+
+    def __init__(self, base_url: str, credentials: Dict | None = None) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.credentials = credentials
+        self._prober = DOMProber()
+        self._cache: Dict[str, List[Dict]] = {}
+
+    def enrich_story(self, story: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of the story with all TODO selectors replaced by real ones."""
+        import copy
+        enriched = copy.deepcopy(story)
+        current_url = self.base_url
+
+        for step in enriched.get("steps", []):
+            action = step.get("action", "")
+            target = step.get("target", "")
+            description = step.get("description", "")
+
+            if action == "navigate":
+                path = self._resolve_path(target, description)
+                step["target"] = path
+                current_url = self.base_url + path
+                continue
+
+            if action == "assert_url":
+                if not target or "TODO" in target:
+                    step["target"] = self._resolve_path("", description)
+                continue
+
+            if "TODO" in (target or ""):
+                elements = self._probe_cached(current_url)
+                real_selector = self._best_selector_for_step(elements, action, description, step.get("value", ""))
+                step["target"] = real_selector
+
+        return enriched
+
+    def _probe_cached(self, url: str) -> List[Dict]:
+        if url not in self._cache:
+            result = self._prober.probe(url, self.credentials)
+            self._cache[url] = result.get("elements", [])
+        return self._cache[url]
+
+    def _resolve_path(self, target: str, description: str) -> str:
+        if target and not target.startswith("TODO"):
+            return target if target.startswith("/") else f"/{target}"
+        desc = description.lower()
+        for hint, path in self._PATH_HINTS.items():
+            if hint in desc:
+                return path
+        return "/"
+
+    def _best_selector_for_step(self, elements: List[Dict], action: str, description: str, value: str = "") -> str:
+        keywords = self._keywords(description + " " + value)
+        scored = [(self._score(el, action, keywords), el) for el in elements]
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        if scored and scored[0][0] > 10:
+            return self._selector_string(scored[0][1])
+
+        kw_str = "_".join(keywords[:3]) if keywords else "element"
+        return f"TODO__{action.upper()}_{kw_str.upper()}"
+
+    def _keywords(self, text: str) -> List[str]:
+        words = re.sub(r"[^a-z0-9\s]", "", text.lower()).split()
+        return [w for w in words if w not in self._STOP_WORDS and len(w) > 2]
+
+    def _score(self, el: Dict, action: str, keywords: List[str]) -> int:
+        score = 0
+        checks = [
+            ("dataTest",    100),
+            ("ariaLabel",   80),
+            ("id",          70),
+            ("placeholder", 65),
+            ("name",        60),
+            ("text",        45),
+            ("href",        30),
+            ("className",   15),
+        ]
+        for attr, weight in checks:
+            val = (el.get(attr) or "").lower()
+            if any(kw in val for kw in keywords):
+                score += weight
+
+        tag = (el.get("tag") or "")
+        el_type = (el.get("type") or "").lower()
+
+        if action == "fill":
+            if tag == "input" and el_type not in ("submit", "button", "checkbox", "radio", "hidden"):
+                score += 30
+            if tag == "textarea":
+                score += 25
+        elif action == "click":
+            if tag in ("button", "a"):
+                score += 25
+        elif action == "select":
+            if tag == "select":
+                score += 40
+
+        # Penalise hidden/submit inputs for fill actions
+        if tag == "input" and el_type in ("hidden", "submit") and action == "fill":
+            score -= 60
+
+        return score
+
+    def _selector_string(self, el: Dict) -> str:
+        if el.get("dataTest"):
+            return f"[data-test='{el['dataTest']}']"
+        if el.get("id"):
+            return f"#{el['id']}"
+        if el.get("ariaLabel"):
+            return f"[aria-label='{el['ariaLabel']}']"
+        if el.get("name") and el.get("tag") in ("input", "select", "textarea"):
+            return f"{el['tag']}[name='{el['name']}']"
+        if el.get("text") and el.get("tag") in ("button", "a"):
+            text = el["text"].replace("'", "\\'")[:40]
+            return f"{el['tag']}:has-text('{text}')"
+        if el.get("placeholder"):
+            return f"[placeholder='{el['placeholder']}']"
+        return f"TODO__{el.get('tag', 'element')}"
+
+
+# ── Enhanced CodeGenerator (with Allure support) ──────────────────────────────
+
+class AllureTestGenerator:
+    """Generates pytest test files with Allure decorators from enriched story dicts.
+
+    Separate from CodeGenerator to keep concerns clean.
+    Always uses the enriched story (real selectors from AutoDOMMapper).
+    """
+
+    def generate(self, story: Dict[str, Any], project_name: str) -> str:
+        story_id = story.get("id", "generated")
+        title = story.get("title", "Generated Test")
+        description = story.get("description", "")
+        steps = story.get("steps", [])
+        tags = story.get("tags", [])
+        negatives = story.get("negative_scenarios", [])
+        actor = story.get("actor", "user")
+        ts = _timestamp()
+
+        class_name = _to_class_name(story_id)
+        marks = "".join(f"@pytest.mark.{t}\n" for t in tags)
+        allure_feature = title.split("—")[0].strip() if "—" in title else title
+        allure_story = title.split("—")[1].strip() if "—" in title else ""
+
+        lines: List[str] = [
+            f'"""',
+            f"AI Automation Framework — Generated Test",
+            f"Story   : {title}",
+            f"ID      : {story_id}",
+            f"Actor   : {actor}",
+            f"Created : {ts}",
+            f'"""',
+            "from __future__ import annotations",
+            "",
+            "import pytest",
+            "import allure",
+            "from playwright.sync_api import Page",
+            "",
+            f"from pages.{project_name}_page import {_to_class_name(project_name)}Page",
+            "",
+            "",
+            f'@allure.feature("{allure_feature}")',
+        ]
+        if allure_story:
+            lines.append(f'@allure.story("{allure_story}")')
+        lines += [
+            f'@allure.severity(allure.severity_level.CRITICAL)',
+            f"class Test{class_name}:",
+            f'    """{description}"""',
+            "",
+        ]
+
+        # Happy path test
+        for tag in tags:
+            lines.append(f"    @pytest.mark.{tag}")
+        lines.append(f"    @allure.title('Happy path — {title[:60]}')")
+        lines.append(f"    def test_happy_path(self, page: Page, memory) -> None:")
+        lines.append(f'        """Happy path for: {title}"""')
+
+        for step in steps:
+            code = self._step_to_code(step)
+            lines.append(f"        {code}")
+
+        lines.append("")
+
+        # Negative scenarios
+        for neg in negatives:
+            name = _slug(neg.get("title", "scenario"))
+            expected = neg.get("expected", "")
+            lines += [
+                f"    @allure.title('{neg.get('title', 'Negative scenario')}')",
+                f"    @allure.severity(allure.severity_level.NORMAL)",
+                f"    def test_{name}(self, page: Page, memory) -> None:",
+                f'        """{neg.get("title", "")}',
+                "",
+                f"        Expected: {expected}",
+                '        """',
+                "        # TODO: implement negative scenario steps",
+                "        pass",
+                "",
+            ]
+
+        return "\n".join(lines)
+
+    def _step_to_code(self, step: Dict) -> str:
+        action = step.get("action", "")
+        target = step.get("target", "")
+        value = step.get("value", "")
+        desc = step.get("description", "")
+        comment = f"  # {desc}" if desc else ""
+
+        if action == "navigate":
+            return f'page.goto(BASE_URL + "{target}"){comment}'
+        if action == "fill":
+            val = value or "TODO_VALUE"
+            return f'page.fill("{target}", "{val}"){comment}'
+        if action == "click":
+            return f'page.click("{target}"){comment}'
+        if action == "assert_url":
+            return f'page.wait_for_url("**{target}"){comment}'
+        if action == "assert_visible":
+            return f'assert page.locator("{target}").is_visible(){comment}'
+        if action == "assert_text":
+            return f'assert "{value}" in page.locator("{target}").inner_text(){comment}'
+        if action == "select":
+            return f'page.select_option("{target}", "{value}"){comment}'
+        return f'# TODO: {action} on "{target}"{comment}'
+
+
 # ── Project Scaffolder ────────────────────────────────────────────────────────
 
 class ProjectScaffolder:

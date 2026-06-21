@@ -9,6 +9,7 @@ Direct invocation (without install):
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -20,13 +21,506 @@ from urllib.parse import urlparse
 import click
 
 from core.memory_engine import MemoryEngine
-from utils.helpers import APICodeGenerator, CodeGenerator, ProjectScaffolder, StoryParser
+from utils.helpers import (
+    APICodeGenerator,
+    AllureTestGenerator,
+    AutoDOMMapper,
+    CodeGenerator,
+    NaturalLanguageStoryParser,
+    ProjectScaffolder,
+    StoryParser,
+)
 
 
 @click.group()
-@click.version_option("1.0.0", prog_name="framework")
+@click.version_option("2.0.0", prog_name="framework")
 def framework() -> None:
-    """AI-Augmented Test Automation Framework CLI."""
+    """AI-Augmented Test Automation Framework CLI.
+
+    \b
+    Workflow:
+      1. framework setup          — interactive wizard (URL, credentials, browser)
+      2. framework add-story      — convert plain English to story JSON
+      3. framework build          — probe DOM + generate test code (no TODOs)
+      4. framework run            — run tests + publish Allure dashboard
+
+    \b
+    Repair:
+      framework fix-selector      — patch a broken locator in-place
+    """
+
+
+# ── setup ─────────────────────────────────────────────────────────────────────
+
+@framework.command("setup")
+@click.option("--non-interactive", is_flag=True, default=False,
+              help="Skip prompts (use --url / --name flags instead)")
+@click.option("--url", default=None, help="Application base URL")
+@click.option("--name", default=None, help="Short project name (e.g. myapp)")
+@click.option("--browser", default=None,
+              type=click.Choice(["chromium", "firefox", "webkit"]),
+              help="Default browser for Playwright tests")
+def setup(non_interactive: bool, url: Optional[str], name: Optional[str], browser: Optional[str]) -> None:
+    """Interactive wizard: configure a new project and write .env + config.json.
+
+    Run this first when onboarding a new application under test.
+
+    \b
+    What it does
+    ------------
+    - Asks for app URL, project name, credentials, and browser preference
+    - Writes .env with credentials (gitignored — never committed)
+    - Updates config.json with base_url and browser settings
+    - Scaffolds locators/, pages/, tests/, stories/ skeletons
+    """
+    click.echo()
+    click.echo(click.style("  AI Automation Framework — Project Setup", bold=True))
+    click.echo(click.style("  ─────────────────────────────────────────", fg="blue"))
+    click.echo()
+
+    # Collect inputs
+    if non_interactive:
+        if not url or not name:
+            raise click.UsageError("--url and --name are required with --non-interactive")
+        app_url = url
+        project_name = name
+        browser_choice = browser or "chromium"
+        username = ""
+        password = ""
+    else:
+        app_url = url or click.prompt(
+            "  Application URL",
+            default="https://yourapp.com",
+        )
+        project_name = name or click.prompt(
+            "  Project name (no spaces, e.g. myapp)",
+            default=_url_to_project_name(app_url),
+        )
+        browser_choice = browser or click.prompt(
+            "  Default browser",
+            type=click.Choice(["chromium", "firefox", "webkit"]),
+            default="chromium",
+        )
+        has_auth = click.confirm("  Does the app require login credentials?", default=True)
+        if has_auth:
+            username = click.prompt(f"  {project_name.upper()}_USERNAME", default="")
+            password = click.prompt(f"  {project_name.upper()}_PASSWORD", hide_input=True, default="")
+        else:
+            username = ""
+            password = ""
+
+    click.echo()
+    click.echo(click.style("  Writing configuration…", fg="cyan"))
+
+    # Write .env
+    env_lines: list[str] = []
+    env_path = Path(".env")
+    if env_path.exists():
+        env_lines = [l for l in env_path.read_text(encoding="utf-8").splitlines()
+                     if l and not l.startswith(f"{project_name.upper()}_")
+                     and not l.startswith("BASE_URL=") and not l.startswith("BROWSER=")]
+    env_lines += [
+        f"BASE_URL={app_url}",
+        f"BROWSER={browser_choice}",
+    ]
+    if username:
+        env_lines.append(f"{project_name.upper()}_USERNAME={username}")
+    if password:
+        env_lines.append(f"{project_name.upper()}_PASSWORD={password}")
+    env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+    click.echo(click.style("  [written] .env", fg="green"))
+
+    # Update config.json
+    config_path = Path("config.json")
+    config: dict = {}
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            config = {}
+    config.setdefault("app", {})
+    config["app"]["base_url"] = app_url
+    config.setdefault("browser", {})
+    config["browser"]["browser"] = browser_choice
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    click.echo(click.style("  [written] config.json", fg="green"))
+
+    # Scaffold project files
+    click.echo(click.style("  Scaffolding project skeleton…", fg="cyan"))
+    scaffolder = ProjectScaffolder(app_url, project_name, "both")
+    created = scaffolder.scaffold()
+    for path in created:
+        click.echo(click.style(f"  [created] {path}", fg="green"))
+
+    click.echo()
+    click.echo(click.style("  Setup complete!", fg="green", bold=True))
+    click.echo()
+    click.echo(click.style("  Next steps:", bold=True))
+    click.echo(f"    framework add-story --text 'As a {project_name} user I want to log in'")
+    click.echo(f"    framework build")
+    click.echo(f"    framework run")
+    click.echo()
+
+
+# ── add-story ─────────────────────────────────────────────────────────────────
+
+@framework.command("add-story")
+@click.option("--text", default=None, help="Plain English story text (inline)")
+@click.option("--file", "story_file", default=None, type=click.Path(exists=True),
+              help="Path to a .txt file containing the story")
+@click.option("--output-dir", default="stories", show_default=True,
+              help="Directory to write story JSON files")
+def add_story(text: Optional[str], story_file: Optional[str], output_dir: str) -> None:
+    """Convert plain English requirements into structured story JSON.
+
+    Accepts inline text (--text) or a .txt file (--file).
+    Multiple stories can be separated with '---' in the input.
+
+    \b
+    Examples
+    --------
+    framework add-story --text "As a user I want to log in and see the dashboard"
+
+    framework add-story --file requirements.txt
+
+    \b
+    After adding stories, run:
+        framework build         (probes DOM + generates test code)
+    """
+    if not text and not story_file:
+        raise click.UsageError("Provide --text or --file")
+
+    if story_file:
+        raw = Path(story_file).read_text(encoding="utf-8")
+    else:
+        raw = text or ""
+
+    parser = NaturalLanguageStoryParser()
+    stories = parser.parse(raw)
+
+    if not stories:
+        click.echo(click.style("  [ERROR] No stories parsed from input.", fg="red"), err=True)
+        raise SystemExit(1)
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    click.echo()
+    for story in stories:
+        story_id = story.get("id", "story_001")
+        out_file = output_path / f"{story_id}.json"
+        out_file.write_text(json.dumps(story, indent=2), encoding="utf-8")
+        click.echo(click.style(f"  [created] {out_file}", fg="green"))
+        click.echo(f"           Title : {story.get('title', 'Untitled')}")
+        click.echo(f"           Steps : {len(story.get('steps', []))}")
+        neg = story.get("negative_scenarios", [])
+        if neg:
+            click.echo(f"           Negative scenarios: {len(neg)}")
+
+    click.echo()
+    click.echo(click.style("  Next step:", bold=True) + "  framework build")
+    click.echo()
+
+
+# ── build ─────────────────────────────────────────────────────────────────────
+
+@framework.command("build")
+@click.option("--story", "story_path", default=None, type=click.Path(exists=True),
+              help="Build a single story file (default: all stories/*.json)")
+@click.option("--base-url", default=None,
+              help="Override base URL (default: from config.json / .env)")
+@click.option("--no-probe", is_flag=True, default=False,
+              help="Skip live DOM probing (keeps TODO selectors — useful offline)")
+@click.option("--username", default=None, help="App username (overrides .env)")
+@click.option("--password", default=None, help="App password (overrides .env)")
+def build(
+    story_path: Optional[str],
+    base_url: Optional[str],
+    no_probe: bool,
+    username: Optional[str],
+    password: Optional[str],
+) -> None:
+    """Probe the live DOM and generate complete test code from story files.
+
+    This is the core command of the four-loop pipeline.
+    It reads story JSON, probes the live app for real selectors,
+    then writes locators, page objects, and pytest test files.
+
+    \b
+    What it generates (per story)
+    -----------------------------
+    locators/<project>_locators.py   — real CSS/data-test selectors
+    pages/<project>_page.py          — page object with action methods
+    tests/workflows/test_<id>.py     — pytest class with Allure markers
+
+    \b
+    No TODOs in output (unless --no-probe is used and a selector can't be found).
+    """
+    # Resolve base URL
+    resolved_url = base_url or os.getenv("BASE_URL") or _read_config_url()
+    if not resolved_url:
+        click.echo(
+            click.style("  [ERROR] ", fg="red") +
+            "No base URL found. Run 'framework setup' first or pass --base-url.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Collect story files
+    if story_path:
+        story_files = [Path(story_path)]
+    else:
+        story_files = sorted(Path("stories").glob("*.json"))
+        # Skip template files
+        story_files = [f for f in story_files if "template" not in f.name.lower()]
+
+    if not story_files:
+        click.echo(
+            click.style("  [ERROR] ", fg="red") +
+            "No story files found in stories/. Run 'framework add-story' first.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Resolve credentials for auto-login
+    creds: dict | None = None
+    u = username or os.getenv("USERNAME") or _first_env_credential("USERNAME")
+    p = password or os.getenv("PASSWORD") or _first_env_credential("PASSWORD")
+    if u and p:
+        creds = {"username": u, "password": p}
+
+    mapper = AutoDOMMapper(resolved_url, creds) if not no_probe else None
+    gen = AllureTestGenerator()
+
+    click.echo()
+    click.echo(click.style(f"  Building from {len(story_files)} story file(s)…", bold=True))
+    click.echo(f"  Target URL : {resolved_url}")
+    click.echo(f"  DOM probe  : {'enabled' if not no_probe else 'disabled (--no-probe)'}")
+    click.echo()
+
+    all_created: list[str] = []
+    has_todos = False
+
+    for story_file in story_files:
+        raw_story = json.loads(story_file.read_text(encoding="utf-8"))
+        raw_story.setdefault("base_url", resolved_url)
+
+        click.echo(click.style(f"  Processing {story_file.name}…", fg="cyan"))
+
+        # Enrich story with real selectors
+        if mapper:
+            try:
+                story = mapper.enrich_story(raw_story)
+                click.echo("    DOM probe  : OK")
+            except Exception as exc:
+                click.echo(click.style(f"    DOM probe  : FAILED ({exc})", fg="yellow"))
+                story = raw_story
+        else:
+            story = raw_story
+
+        story_id = story.get("id", story_file.stem)
+        project_name = _story_to_project_name(story_id)
+
+        # Check for remaining TODOs
+        todo_count = sum(
+            1 for s in story.get("steps", [])
+            if "TODO" in (s.get("target") or "")
+        )
+        if todo_count:
+            has_todos = True
+            click.echo(click.style(f"    Selectors  : {todo_count} TODO(s) remain — run 'framework fix-selector' or probe manually", fg="yellow"))
+        else:
+            click.echo(click.style(f"    Selectors  : all resolved", fg="green"))
+
+        # Generate locators file
+        created = _write_locators(story, project_name)
+        for path in created:
+            click.echo(click.style(f"    [created] {path}", fg="green"))
+            all_created.append(path)
+
+        # Generate page object
+        page_path = _write_page_object(story, project_name, resolved_url)
+        click.echo(click.style(f"    [created] {page_path}", fg="green"))
+        all_created.append(page_path)
+
+        # Generate test file with Allure
+        test_source = gen.generate(story, project_name)
+        test_dir = Path("tests/workflows")
+        test_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_init(test_dir)
+
+        test_file = test_dir / f"test_{story_id}.py"
+        try:
+            compile(test_source, str(test_file), "exec")
+        except SyntaxError as exc:
+            click.echo(click.style(f"    [ERROR] Syntax error in generated test: {exc}", fg="red"), err=True)
+            continue
+
+        test_file.write_text(test_source, encoding="utf-8")
+        click.echo(click.style(f"    [created] {test_file}", fg="green"))
+        all_created.append(str(test_file))
+
+        # Write back the enriched story (with resolved selectors)
+        story_file.write_text(json.dumps(story, indent=2), encoding="utf-8")
+
+        click.echo()
+
+    click.echo(click.style(f"  Build complete — {len(all_created)} file(s) generated.", bold=True))
+    if has_todos:
+        click.echo(click.style("  Some selectors need manual fixing:", fg="yellow"))
+        click.echo("    framework fix-selector --file locators/<name>_locators.py --constant <NAME> --selector '<selector>'")
+    click.echo()
+    click.echo(click.style("  Next step:", bold=True) + "  framework run")
+    click.echo()
+
+
+# ── fix-selector ──────────────────────────────────────────────────────────────
+
+@framework.command("fix-selector")
+@click.option("--file", "locator_file", required=True, type=click.Path(exists=True),
+              help="Path to the locators file (e.g. locators/myapp_locators.py)")
+@click.option("--constant", required=True, help="Name of the constant to patch (e.g. LOGIN_BUTTON)")
+@click.option("--selector", required=True, help="New selector value (e.g. [data-test='login-button'])")
+def fix_selector(locator_file: str, constant: str, selector: str) -> None:
+    """Patch a single locator constant in a locator file.
+
+    Used by the CORRECTOR LOOP when a test fails due to a selector mismatch.
+    The MCP inspect_current_dom tool finds the real selector; this command
+    writes it into the locator file without touching any other constants.
+
+    \b
+    Examples
+    --------
+    framework fix-selector \\
+        --file locators/myapp_locators.py \\
+        --constant LOGIN_BUTTON \\
+        --selector "[data-test='login-button']"
+    """
+    path = Path(locator_file)
+    source = path.read_text(encoding="utf-8")
+
+    # Match:  CONSTANT_NAME = "old-value"  (single or double quotes)
+    pattern = re.compile(
+        rf'^(\s*{re.escape(constant)}\s*=\s*)["\']([^"\']*)["\']',
+        re.MULTILINE,
+    )
+    match = pattern.search(source)
+    if not match:
+        click.echo(
+            click.style(f"  [ERROR] ", fg="red") +
+            f"Constant '{constant}' not found in {locator_file}.\n"
+            f"  Available constants:",
+            err=True,
+        )
+        for line in source.splitlines():
+            m = re.match(r'\s*([A-Z_][A-Z0-9_]+)\s*=', line)
+            if m:
+                click.echo(f"    {m.group(1)}", err=True)
+        raise SystemExit(1)
+
+    old_selector = match.group(2)
+    new_source = pattern.sub(rf'\g<1>"{selector}"', source)
+    path.write_text(new_source, encoding="utf-8")
+
+    click.echo()
+    click.echo(click.style(f"  [fixed] {locator_file}", fg="green"))
+    click.echo(f"  Constant : {constant}")
+    click.echo(click.style(f"  Before   : {old_selector}", fg="red"))
+    click.echo(click.style(f"  After    : {selector}", fg="green"))
+
+    # Record to memory engine so Corrector can track the fix
+    mem = MemoryEngine()
+    mem.record_selector_fix(
+        page_name=path.stem,
+        element_name=constant,
+        original=old_selector,
+        fixed=selector,
+        reason="corrector-loop fix via CLI",
+    )
+    click.echo()
+
+
+# ── run ───────────────────────────────────────────────────────────────────────
+
+@framework.command("run")
+@click.option("--suite", default="tests/", show_default=True,
+              help="Path to test file or directory")
+@click.option("--browser-type", default="chromium", show_default=True,
+              type=click.Choice(["chromium", "firefox", "webkit"]))
+@click.option("--headless", is_flag=True, default=False)
+@click.option("--no-report", is_flag=True, default=False, help="Skip HTML report generation")
+@click.option("--alluredir", default="allure-results", show_default=True,
+              help="Directory to write Allure result files")
+@click.option("--no-allure", is_flag=True, default=False,
+              help="Skip Allure result collection")
+@click.option("-k", "keyword", default=None, help="Pytest keyword expression filter")
+@click.option("--base-url", default=None, help="Override the application base URL for this run")
+@click.option("--marker", "-m", default=None, help="Run only tests matching this marker (e.g. smoke)")
+def run(
+    suite: str,
+    browser_type: str,
+    headless: bool,
+    no_report: bool,
+    alluredir: str,
+    no_allure: bool,
+    keyword: Optional[str],
+    base_url: Optional[str],
+    marker: Optional[str],
+) -> None:
+    """Execute the test suite with pytest + Allure reporting.
+
+    \b
+    Examples
+    --------
+    # Full suite with Allure
+    framework run
+
+    # Specific browser, headed mode
+    framework run --browser-type firefox --headless
+
+    # Only smoke tests
+    framework run --marker smoke
+
+    # Keyword filter
+    framework run -k "login"
+    """
+    env = os.environ.copy()
+    env["BROWSER"] = browser_type
+    env["HEADLESS"] = "true" if headless else "false"
+    if base_url:
+        env["BASE_URL"] = base_url
+
+    cmd = [sys.executable, "-m", "pytest", suite, "-v", "--tb=short"]
+
+    if keyword:
+        cmd += ["-k", keyword]
+    if marker:
+        cmd += ["-m", marker]
+    if not no_report:
+        Path("reports").mkdir(exist_ok=True)
+        cmd += ["--html=reports/report.html", "--self-contained-html"]
+    if not no_allure:
+        Path(alluredir).mkdir(exist_ok=True)
+        cmd += [f"--alluredir={alluredir}"]
+
+    click.echo(f"\nRunning: {' '.join(cmd)}\n")
+    result = subprocess.run(cmd, env=env)
+
+    # Generate Allure HTML report if results exist
+    if not no_allure and Path(alluredir).exists():
+        allure_cmd = ["allure", "generate", alluredir, "--clean", "-o", "allure-report"]
+        click.echo(f"\nGenerating Allure dashboard: {' '.join(allure_cmd)}")
+        gen_result = subprocess.run(allure_cmd, capture_output=True, text=True)
+        if gen_result.returncode == 0:
+            click.echo(click.style("  Dashboard → allure-report/index.html", fg="green"))
+        else:
+            click.echo(
+                click.style("  [INFO] allure CLI not installed — raw results in: ", fg="yellow") +
+                f"{alluredir}/"
+            )
+            click.echo("  Install allure: scoop install allure (Windows) | brew install allure (Mac)")
+
+    sys.exit(result.returncode)
 
 
 # ── init-project ──────────────────────────────────────────────────────────────
@@ -42,28 +536,14 @@ def framework() -> None:
     help="Scaffold web (Playwright), api (HTTP), or both.",
 )
 def init_project(url: str, name: str, project_type: str) -> None:
-    """Scaffold a complete test project skeleton for a new application.
+    """Scaffold a test project skeleton for a new application.
 
-    Creates ready-to-edit locators, page objects, story files, and test stubs
-    for the target URL.  All generated files are listed in .gitignore so they
-    never pollute the framework repo.
-
-    \b
-    Examples
-    --------
-    # Web + API skeleton (default)
-    framework init-project --url https://myapp.com --name myapp
-
-    # API-only skeleton
-    framework init-project --url https://api.myapp.com --name myapp --type api
+    Creates ready-to-edit locators, page objects, story files, and test stubs.
+    All generated files are listed in .gitignore — they never pollute the framework repo.
 
     \b
-    Next steps after scaffolding
-    ----------------------------
-    1. Inspect the target DOM and update locators/<name>_locators.py
-    2. Extend pages/<name>_page.py with app-specific methods
-    3. Set credentials via env vars (see the generated test file header)
-    4. Run: framework run --suite tests/ --base-url <url>
+    Prefer 'framework setup' for first-time onboarding (interactive wizard).
+    Use this command for scripted or CI-driven scaffolding.
     """
     scaffolder = ProjectScaffolder(url, name, project_type)
     created = scaffolder.scaffold()
@@ -78,10 +558,9 @@ def init_project(url: str, name: str, project_type: str) -> None:
 
     click.echo()
     click.echo(click.style("Next steps:", bold=True))
-    click.echo(f"  1. Update locators in  locators/{name}_locators.py")
-    if project_type in ("web", "both"):
-        click.echo(f"  2. Set credentials:    export {name.upper()}_USERNAME=... && export {name.upper()}_PASSWORD=...")
-    click.echo(f"  3. Run tests:          framework run --suite tests/ --base-url {url}")
+    click.echo(f"  1. Add a story:        framework add-story --text 'As a user I want to ...'")
+    click.echo(f"  2. Build test code:    framework build --base-url {url}")
+    click.echo(f"  3. Run:                framework run")
     click.echo()
     click.echo(
         click.style("Note: ", fg="yellow", bold=True)
@@ -126,7 +605,11 @@ def generate_page(url: str, name: Optional[str], output_dir: str) -> None:
 @click.option("--story", required=True, type=click.Path(exists=True), help="Path to user story JSON/TXT file")
 @click.option("--output-dir", default="tests/workflows", show_default=True)
 def generate_test(story: str, output_dir: str) -> None:
-    """Generate a complete pytest test class from a user story file."""
+    """Generate a complete pytest test class from a user story file.
+
+    Prefer 'framework build' which also probes the live DOM for real selectors.
+    Use this command if you have a hand-crafted story JSON with selectors already filled in.
+    """
     parser = StoryParser()
     gen = CodeGenerator()
 
@@ -139,7 +622,6 @@ def generate_test(story: str, output_dir: str) -> None:
     test_file = output_path / f"test_{story_id}.py"
     source = gen.generate_test_class(user_story)
 
-    # Validate the generated code compiles before writing
     try:
         compile(source, str(test_file), "exec")
     except SyntaxError as exc:
@@ -162,12 +644,7 @@ def generate_test(story: str, output_dir: str) -> None:
 @click.option("--story", required=True, type=click.Path(exists=True), help="Path to API story JSON file")
 @click.option("--output-dir", default="tests/api", show_default=True)
 def generate_api_test(story: str, output_dir: str) -> None:
-    """Generate a pytest API test class from an API story file.
-
-    API story files follow the same JSON format as UI stories but include
-    an 'endpoints' array instead of 'steps'.  Use stories/users_api_story.json
-    as a reference template.
-    """
+    """Generate a pytest API test class from an API story file."""
     parser = StoryParser()
     gen = APICodeGenerator()
 
@@ -198,44 +675,6 @@ def generate_api_test(story: str, output_dir: str) -> None:
     neg = user_story.get("negative_scenarios", [])
     if neg:
         click.echo(f"       Negative : {len(neg)}")
-
-
-# ── run ───────────────────────────────────────────────────────────────────────
-
-@framework.command("run")
-@click.option("--suite", default="tests/", show_default=True, help="Path to test file or directory")
-@click.option("--browser-type", default="chromium", show_default=True,
-              type=click.Choice(["chromium", "firefox", "webkit"]))
-@click.option("--headless", is_flag=True, default=False)
-@click.option("--no-report", is_flag=True, default=False, help="Skip HTML report generation")
-@click.option("-k", "keyword", default=None, help="Pytest keyword expression filter")
-@click.option("--base-url", default=None, help="Override the application base URL for this run")
-def run(
-    suite: str,
-    browser_type: str,
-    headless: bool,
-    no_report: bool,
-    keyword: Optional[str],
-    base_url: Optional[str],
-) -> None:
-    """Execute the test suite with optional HTML reporting."""
-    env = os.environ.copy()
-    env["BROWSER"] = browser_type
-    env["HEADLESS"] = "true" if headless else "false"
-    if base_url:
-        env["BASE_URL"] = base_url
-
-    cmd = [sys.executable, "-m", "pytest", suite, "-v", "--tb=short"]
-
-    if keyword:
-        cmd += ["-k", keyword]
-    if not no_report:
-        Path("reports").mkdir(exist_ok=True)
-        cmd += ["--html=reports/report.html", "--self-contained-html"]
-
-    click.echo(f"Executing: {' '.join(cmd)}")
-    result = subprocess.run(cmd, env=env)
-    sys.exit(result.returncode)
 
 
 # ── memory ────────────────────────────────────────────────────────────────────
@@ -278,9 +717,164 @@ def _url_to_class_name(url: str) -> str:
     return "".join(w.capitalize() for w in re.split(r"[\W_-]+", segment) if w) or "Page"
 
 
+def _url_to_project_name(url: str) -> str:
+    netloc = urlparse(url).netloc
+    # Strip www. and TLD
+    parts = netloc.replace("www.", "").split(".")
+    return parts[0].lower() if parts else "myapp"
+
+
 def _camel_to_snake(name: str) -> str:
     s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
+
+
+def _story_to_project_name(story_id: str) -> str:
+    """Derive a short project name from a story ID (e.g. 'login_flow_001' → 'login')."""
+    parts = story_id.split("_")
+    # Drop trailing numeric segments
+    while parts and parts[-1].isdigit():
+        parts.pop()
+    return "_".join(parts[:2]) if parts else "app"
+
+
+def _read_config_url() -> str:
+    config_path = Path("config.json")
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            return cfg.get("app", {}).get("base_url", "")
+        except (json.JSONDecodeError, KeyError):
+            return ""
+    return ""
+
+
+def _first_env_credential(suffix: str) -> str:
+    """Find the first env var that ends with _USERNAME or _PASSWORD."""
+    for key, val in os.environ.items():
+        if key.endswith(f"_{suffix}") and val:
+            return val
+    return ""
+
+
+def _write_locators(story: dict, project_name: str) -> list[str]:
+    """Generate locators/<project>_locators.py from story steps."""
+    steps = story.get("steps", [])
+    seen: dict[str, str] = {}
+    for step in steps:
+        target = step.get("target", "")
+        if not target or target == "/":
+            continue
+        desc = step.get("description", "")
+        const_name = re.sub(r"[^A-Z0-9_]", "", re.sub(r"\W+", "_", desc.upper()))[:40].strip("_")
+        if not const_name:
+            const_name = f"ELEMENT_{len(seen)}"
+        seen[const_name] = target
+
+    lines = [
+        '"""',
+        f"Locators for: {story.get('title', 'Generated')}",
+        f"Story ID : {story.get('id', 'unknown')}",
+        "",
+        "Auto-generated by framework build — edit selectors in-place.",
+        "Use: framework fix-selector --file <this file> --constant <NAME> --selector <value>",
+        '"""',
+        "",
+    ]
+    for name, sel in seen.items():
+        todo_marker = "  # TODO: find real selector" if "TODO" in sel else ""
+        lines.append(f'{name} = "{sel}"{todo_marker}')
+
+    source = "\n".join(lines) + "\n"
+    locator_dir = Path("locators")
+    locator_dir.mkdir(exist_ok=True)
+    _ensure_init(locator_dir)
+
+    out = locator_dir / f"{project_name}_locators.py"
+    out.write_text(source, encoding="utf-8")
+    return [str(out)]
+
+
+def _write_page_object(story: dict, project_name: str, base_url: str) -> str:
+    """Generate pages/<project>_page.py from story steps."""
+    steps = story.get("steps", [])
+    title = story.get("title", "Generated Page")
+    class_name = "".join(w.capitalize() for w in re.split(r"[\W_]+", project_name) if w) + "Page"
+
+    action_lines: list[str] = []
+    current_method = "execute"
+    method_steps: dict[str, list[str]] = {current_method: []}
+
+    for step in steps:
+        action = step.get("action", "")
+        target = step.get("target", "")
+        value = step.get("value", "")
+        desc = step.get("description", "")
+
+        if action == "navigate":
+            current_method = "navigate_to_" + re.sub(r"\W+", "_", (target or "/").strip("/")) or "home"
+            method_steps.setdefault(current_method, [])
+
+        code = _step_to_page_method_line(action, target, value, desc)
+        if code:
+            method_steps.setdefault(current_method, []).append(code)
+
+    lines = [
+        '"""',
+        f"Page Object for: {title}",
+        '"""',
+        "from __future__ import annotations",
+        "",
+        "from core.base_page import BasePage",
+        "",
+        "",
+        f"class {class_name}(BasePage):",
+        f'    """Page Object for {title}."""',
+        "",
+    ]
+
+    for method_name, method_lines in method_steps.items():
+        safe_name = re.sub(r"[^a-z0-9_]", "", method_name.lower())[:50] or "execute"
+        lines.append(f"    def {safe_name}(self) -> None:")
+        if method_lines:
+            for ml in method_lines:
+                lines.append(f"        {ml}")
+        else:
+            lines.append("        pass")
+        lines.append("")
+
+    source = "\n".join(lines)
+
+    page_dir = Path("pages")
+    page_dir.mkdir(exist_ok=True)
+    _ensure_init(page_dir)
+
+    out = page_dir / f"{project_name}_page.py"
+    out.write_text(source, encoding="utf-8")
+    return str(out)
+
+
+def _step_to_page_method_line(action: str, target: str, value: str, desc: str) -> str:
+    c = f"  # {desc}" if desc else ""
+    if action == "fill":
+        return f'self.fill("{target}", "{value}"){c}'
+    if action == "click":
+        return f'self.click("{target}"){c}'
+    if action == "assert_visible":
+        return f'assert self.is_visible("{target}"){c}'
+    if action == "assert_text":
+        return f'assert "{value}" in self.get_text("{target}"){c}'
+    if action == "assert_url":
+        return f'self.wait_for_url("**{target}"){c}'
+    if action == "select":
+        return f'self.select_option("{target}", "{value}"){c}'
+    return ""
+
+
+def _ensure_init(directory: Path) -> None:
+    init = directory / "__init__.py"
+    if not init.exists():
+        init.write_text("", encoding="utf-8")
 
 
 if __name__ == "__main__":
