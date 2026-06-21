@@ -57,14 +57,16 @@ Then:
 
 ## Agent loop stop rules
 
-The Builder+Checker agent loop stops when:
-- All checks are green
-- 5 cycles are exhausted
-- The same failure appears twice in a row (loop is not converging)
-- A fix breaks a previously passing check
+The four-loop system (Generator → Tester → Corrector → Reporter) stops when:
+- **All green** — every test passes; publish Allure dashboard and report success
+- **5 Corrector cycles used** — stop; report what still fails and what was tried
+- **Same failure twice in a row** — stop; the failure is an application bug, not a selector bug
+- **A fix causes a passing test to fail** — stop; revert the fix; escalate to user
 
-Never report success without showing checker output.
-Never weaken or delete an assertion to make a test pass — fix the code or the locator.
+Never report success without showing actual pytest output from the final run.
+Never weaken or delete an assertion to make a test pass — fix the locator or file the bug.
+
+Full loop protocol: see `copilot-instructions.md`.
 
 ## Code style
 
