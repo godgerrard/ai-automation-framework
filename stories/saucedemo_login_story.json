@@ -1,0 +1,68 @@
+{
+  "id": "saucedemo_login_001",
+  "title": "SauceDemo User Login",
+  "description": "As a shopper I want to log in with valid credentials so I can access the product catalogue.",
+  "priority": "critical",
+  "tags": ["authentication", "smoke"],
+  "pages": ["SauceDemoLoginPage"],
+  "preconditions": ["Browser is open at https://www.saucedemo.com"],
+  "steps": [
+    {
+      "id": "step_01",
+      "action": "navigate",
+      "target": "/",
+      "description": "Open the SauceDemo login page"
+    },
+    {
+      "id": "step_02",
+      "action": "fill",
+      "target": "[data-test='username']",
+      "value": "standard_user",
+      "description": "Enter valid username"
+    },
+    {
+      "id": "step_03",
+      "action": "fill",
+      "target": "[data-test='password']",
+      "value": "secret_sauce",
+      "description": "Enter valid password"
+    },
+    {
+      "id": "step_04",
+      "action": "click",
+      "target": "[data-test='login-button']",
+      "description": "Click login button"
+    },
+    {
+      "id": "step_05",
+      "action": "assert_url",
+      "target": "/inventory.html",
+      "description": "Verify redirect to inventory page"
+    }
+  ],
+  "expected_outcomes": [
+    "User is redirected to /inventory.html",
+    "No error message is shown",
+    "Product catalogue is visible"
+  ],
+  "negative_scenarios": [
+    {
+      "id": "neg_01",
+      "title": "Locked out user cannot login",
+      "steps": ["Enter 'locked_out_user' as username", "Enter 'secret_sauce' as password", "Click login"],
+      "expected": "Error message: 'Sorry, this user has been locked out'"
+    },
+    {
+      "id": "neg_02",
+      "title": "Empty credentials show validation error",
+      "steps": ["Leave fields empty", "Click login button"],
+      "expected": "Error: 'Epic sadface: Username is required'"
+    },
+    {
+      "id": "neg_03",
+      "title": "Wrong password shows credential error",
+      "steps": ["Enter valid username", "Enter wrong password", "Click login"],
+      "expected": "Error: username and password do not match"
+    }
+  ]
+}

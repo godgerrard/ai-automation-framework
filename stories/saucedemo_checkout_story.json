@@ -1,0 +1,125 @@
+{
+  "id": "saucedemo_checkout_001",
+  "title": "SauceDemo Full Checkout Flow",
+  "description": "As a shopper I want to add items to cart and complete checkout so I can purchase products.",
+  "priority": "critical",
+  "tags": ["checkout", "smoke", "regression"],
+  "pages": ["SauceDemoLoginPage", "InventoryPage", "CartPage", "CheckoutPage"],
+  "preconditions": ["User is logged in as standard_user"],
+  "steps": [
+    {
+      "id": "step_01",
+      "action": "navigate",
+      "target": "/",
+      "description": "Navigate to login page"
+    },
+    {
+      "id": "step_02",
+      "action": "fill",
+      "target": "[data-test='username']",
+      "value": "standard_user",
+      "description": "Enter username"
+    },
+    {
+      "id": "step_03",
+      "action": "fill",
+      "target": "[data-test='password']",
+      "value": "secret_sauce",
+      "description": "Enter password"
+    },
+    {
+      "id": "step_04",
+      "action": "click",
+      "target": "[data-test='login-button']",
+      "description": "Login"
+    },
+    {
+      "id": "step_05",
+      "action": "click",
+      "target": "[data-test='add-to-cart-sauce-labs-backpack']",
+      "description": "Add Sauce Labs Backpack to cart"
+    },
+    {
+      "id": "step_06",
+      "action": "click",
+      "target": ".shopping_cart_link",
+      "description": "Open cart"
+    },
+    {
+      "id": "step_07",
+      "action": "assert_visible",
+      "target": ".inventory_item_name",
+      "description": "Verify item is in cart"
+    },
+    {
+      "id": "step_08",
+      "action": "click",
+      "target": "[data-test='checkout']",
+      "description": "Proceed to checkout"
+    },
+    {
+      "id": "step_09",
+      "action": "fill",
+      "target": "[data-test='firstName']",
+      "value": "Test",
+      "description": "Enter first name"
+    },
+    {
+      "id": "step_10",
+      "action": "fill",
+      "target": "[data-test='lastName']",
+      "value": "User",
+      "description": "Enter last name"
+    },
+    {
+      "id": "step_11",
+      "action": "fill",
+      "target": "[data-test='postalCode']",
+      "value": "12345",
+      "description": "Enter postal code"
+    },
+    {
+      "id": "step_12",
+      "action": "click",
+      "target": "[data-test='continue']",
+      "description": "Continue to order overview"
+    },
+    {
+      "id": "step_13",
+      "action": "click",
+      "target": "[data-test='finish']",
+      "description": "Finish the order"
+    },
+    {
+      "id": "step_14",
+      "action": "assert_url",
+      "target": "/checkout-complete.html",
+      "description": "Verify order confirmation page"
+    },
+    {
+      "id": "step_15",
+      "action": "assert_visible",
+      "target": "[data-test='complete-header']",
+      "description": "Verify order complete header is shown"
+    }
+  ],
+  "expected_outcomes": [
+    "Order is placed successfully",
+    "User lands on /checkout-complete.html",
+    "'Thank you for your order!' header is visible"
+  ],
+  "negative_scenarios": [
+    {
+      "id": "neg_01",
+      "title": "Checkout with empty info form shows error",
+      "steps": ["Add item", "Go to cart", "Click Checkout", "Click Continue without filling info"],
+      "expected": "Error: First Name is required"
+    },
+    {
+      "id": "neg_02",
+      "title": "Cancel checkout returns to cart",
+      "steps": ["Add item", "Go to cart", "Click Checkout", "Click Cancel"],
+      "expected": "User is returned to /cart.html"
+    }
+  ]
+}
