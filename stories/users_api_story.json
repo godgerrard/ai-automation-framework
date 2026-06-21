@@ -1,0 +1,97 @@
+{
+  "id": "users_api_001",
+  "title": "Users API CRUD Operations",
+  "type": "api",
+  "description": "As an API consumer I want full CRUD access to the users resource so that client applications can manage user data reliably.",
+  "priority": "high",
+  "tags": ["api", "regression"],
+  "base_url": "https://jsonplaceholder.typicode.com",
+  "endpoints": [
+    {
+      "id": "list_users",
+      "method": "GET",
+      "path": "/api/users",
+      "params": { "page": 1 },
+      "expected_status": 200,
+      "expected_schema": ["page", "data", "total", "total_pages"],
+      "description": "List all users — first page"
+    },
+    {
+      "id": "list_users_page_2",
+      "method": "GET",
+      "path": "/api/users",
+      "params": { "page": 2 },
+      "expected_status": 200,
+      "expected_schema": ["page", "data"],
+      "description": "List users — second page"
+    },
+    {
+      "id": "get_single_user",
+      "method": "GET",
+      "path": "/api/users/2",
+      "expected_status": 200,
+      "expected_schema": ["data", "support"],
+      "description": "Retrieve a single user by ID"
+    },
+    {
+      "id": "get_missing_user",
+      "method": "GET",
+      "path": "/api/users/23",
+      "expected_status": 404,
+      "description": "Non-existent user returns 404"
+    },
+    {
+      "id": "create_user",
+      "method": "POST",
+      "path": "/api/users",
+      "body": { "name": "morpheus", "job": "leader" },
+      "expected_status": 201,
+      "expected_schema": ["name", "job", "id", "createdAt"],
+      "description": "Create a new user"
+    },
+    {
+      "id": "update_user",
+      "method": "PUT",
+      "path": "/api/users/2",
+      "body": { "name": "morpheus", "job": "zion resident" },
+      "expected_status": 200,
+      "expected_schema": ["name", "job", "updatedAt"],
+      "description": "Replace user record with PUT"
+    },
+    {
+      "id": "patch_user",
+      "method": "PATCH",
+      "path": "/api/users/2",
+      "body": { "job": "architect" },
+      "expected_status": 200,
+      "expected_schema": ["job", "updatedAt"],
+      "description": "Partially update user job with PATCH"
+    },
+    {
+      "id": "delete_user",
+      "method": "DELETE",
+      "path": "/api/users/2",
+      "expected_status": 204,
+      "description": "Delete a user — expects empty body"
+    }
+  ],
+  "negative_scenarios": [
+    {
+      "id": "missing_user_404",
+      "title": "Non-existent user returns 404 with empty body",
+      "method": "GET",
+      "path": "/api/users/9999",
+      "expected_status": 404,
+      "expected": "Empty JSON object"
+    },
+    {
+      "id": "create_empty_body",
+      "title": "Create user with empty payload still returns 201 (reqres.in is permissive)",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {},
+      "expected_status": 201,
+      "expected": "id and createdAt are generated server-side regardless"
+    }
+  ]
+}

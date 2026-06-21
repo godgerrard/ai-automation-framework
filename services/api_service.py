@@ -1,38 +1,59 @@
 """
-APIService — thin urllib wrapper for test data setup and teardown.
+APIService — production-ready HTTP client for API testing.
 
-Avoids the `requests` dependency so the framework stays lean.
-URL construction uses explicit string concatenation (not urljoin) to guarantee
-correct behaviour regardless of whether the base URL has a path component.
+Features
+  - Returns APIResponse objects with chainable assertions (not raw dicts)
+  - Response-time tracking on every request
+  - Structured request/response logging
+  - Configurable retry with exponential back-off for transient errors
+  - Session-level auth: Bearer token, API key header, HTTP Basic
+  - Query-string params on GET requests
+  - No third-party dependencies — pure stdlib
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 from urllib import error, request
+from urllib.parse import urlencode
+
+from services.api_response import APIResponse
 
 logger = logging.getLogger(__name__)
 
+_RETRYABLE_CODES = {429, 500, 502, 503, 504}
+
 
 class APIError(Exception):
-    def __init__(self, status_code: int, message: str) -> None:
-        self.status_code = status_code
-        self.message = message
-        super().__init__(f"HTTP {status_code}: {message}")
+    """Raised only for network-level failures (no HTTP response received)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class APIService:
-    """Synchronous HTTP client for backend test data management."""
+    """Synchronous HTTP client that returns APIResponse objects.
+
+    max_retries=0 (default for test clients) means responses are returned as-is
+    so tests can assert on 4xx/5xx status codes directly.
+    Set max_retries>0 for setup/teardown helpers that need reliability.
+    """
 
     def __init__(
         self,
         base_url: str,
         headers: Optional[Dict[str, str]] = None,
         timeout: int = 30,
+        max_retries: int = 0,
+        retry_backoff_base: float = 0.5,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
+        self._retry_backoff_base = retry_backoff_base
         self._headers: Dict[str, str] = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -40,65 +61,116 @@ class APIService:
         if headers:
             self._headers.update(headers)
 
-    def set_auth_token(self, token: str) -> None:
+    # ── Auth helpers ──────────────────────────────────────────────────────────
+
+    def set_bearer_token(self, token: str) -> None:
         self._headers["Authorization"] = f"Bearer {token}"
 
-    # ── HTTP verbs ────────────────────────────────────────────────────────────
+    def set_api_key(self, key: str, header_name: str = "X-API-Key") -> None:
+        self._headers[header_name] = key
 
-    def get(self, path: str) -> Dict[str, Any]:
-        return self._execute(self._build(path, method="GET"))
+    def set_basic_auth(self, username: str, password: str) -> None:
+        encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+        self._headers["Authorization"] = f"Basic {encoded}"
 
-    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._execute(self._build(path, method="POST", body=body))
+    def clear_auth(self) -> None:
+        self._headers.pop("Authorization", None)
 
-    def put(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._execute(self._build(path, method="PUT", body=body))
+    # ── HTTP verbs ─────────────────────────────────────────────────────────────
 
-    def patch(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._execute(self._build(path, method="PATCH", body=body))
+    def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> APIResponse:
+        url = self._build_url(path)
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        return self._execute(url, method="GET")
 
-    def delete(self, path: str) -> Dict[str, Any]:
-        return self._execute(self._build(path, method="DELETE"))
+    def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> APIResponse:
+        return self._execute(self._build_url(path), method="POST", body=body)
 
-    # ── Domain helpers ────────────────────────────────────────────────────────
+    def put(self, path: str, body: Optional[Dict[str, Any]] = None) -> APIResponse:
+        return self._execute(self._build_url(path), method="PUT", body=body)
 
-    def create_test_user(self, email: str, password: str, **extra: Any) -> Dict[str, Any]:
+    def patch(self, path: str, body: Optional[Dict[str, Any]] = None) -> APIResponse:
+        return self._execute(self._build_url(path), method="PATCH", body=body)
+
+    def delete(self, path: str) -> APIResponse:
+        return self._execute(self._build_url(path), method="DELETE")
+
+    # ── Domain helpers for test data setup/teardown ───────────────────────────
+
+    def create_test_user(self, email: str, password: str, **extra: Any) -> APIResponse:
         return self.post("/api/users", {"email": email, "password": password, **extra})
 
-    def delete_test_user(self, user_id: str) -> Dict[str, Any]:
+    def delete_test_user(self, user_id: str) -> APIResponse:
         return self.delete(f"/api/users/{user_id}")
 
     def get_auth_token(self, email: str, password: str) -> str:
+        """Login and return the raw token string (for injecting into Bearer headers)."""
         resp = self.post("/api/auth/login", {"email": email, "password": password})
-        return resp.get("token", resp.get("access_token", ""))
+        body = resp.json()
+        return body.get("token", body.get("access_token", ""))
 
-    # ── Internals ─────────────────────────────────────────────────────────────
+    # ── Internals ──────────────────────────────────────────────────────────────
 
     def _build_url(self, path: str) -> str:
-        """Concatenate base_url and path safely regardless of path format."""
         if path.startswith(("http://", "https://")):
             return path
         separator = "" if path.startswith("/") else "/"
         return f"{self.base_url}{separator}{path}"
 
-    def _build(
+    def _execute(
         self,
-        path: str,
-        method: str = "GET",
+        url: str,
+        method: str,
         body: Optional[Dict[str, Any]] = None,
-    ) -> request.Request:
-        url = self._build_url(path)
+        _attempt: int = 0,
+    ) -> APIResponse:
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        return request.Request(url, data=data, headers=self._headers, method=method)
+        req = request.Request(url, data=data, headers=self._headers.copy(), method=method)
 
-    def _execute(self, req: request.Request) -> Dict[str, Any]:
-        logger.debug("%s %s", req.get_method(), req.full_url)
+        logger.debug("→ %s %s", method, url)
+        start = time.monotonic()
+
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw else {}
+                elapsed_ms = (time.monotonic() - start) * 1000
+                raw = resp.read()
+                status = resp.status
+                headers = dict(resp.headers)
+                logger.debug("← %d (%.0fms) %s", status, elapsed_ms, url)
+                return APIResponse(
+                    status_code=status,
+                    body=raw,
+                    headers=headers,
+                    elapsed_ms=elapsed_ms,
+                    url=url,
+                    method=method,
+                )
+
         except error.HTTPError as exc:
-            body = exc.read().decode("utf-8")
-            raise APIError(exc.code, body) from exc
+            elapsed_ms = (time.monotonic() - start) * 1000
+            # Retry transient server errors if configured
+            if exc.code in _RETRYABLE_CODES and _attempt < self.max_retries:
+                wait = self._retry_backoff_base * (2 ** _attempt)
+                logger.warning(
+                    "Retrying %s %s (HTTP %d) in %.1fs [attempt %d/%d]",
+                    method, url, exc.code, wait, _attempt + 1, self.max_retries,
+                )
+                time.sleep(wait)
+                return self._execute(url, method, body, _attempt + 1)
+
+            # Return error responses as APIResponse so tests can assert on them
+            raw = exc.read()
+            headers = dict(exc.headers)
+            logger.debug("← %d (%.0fms) %s", exc.code, elapsed_ms, url)
+            return APIResponse(
+                status_code=exc.code,
+                body=raw,
+                headers=headers,
+                elapsed_ms=elapsed_ms,
+                url=url,
+                method=method,
+            )
+
         except error.URLError as exc:
-            raise APIError(0, str(exc.reason)) from exc
+            raise APIError(f"Network error reaching {url}: {exc.reason}") from exc

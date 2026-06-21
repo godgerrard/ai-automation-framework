@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import click
 
 from core.memory_engine import MemoryEngine
-from utils.helpers import CodeGenerator, StoryParser
+from utils.helpers import APICodeGenerator, CodeGenerator, StoryParser
 
 
 @click.group()
@@ -94,6 +94,50 @@ def generate_test(story: str, output_dir: str) -> None:
     neg = user_story.get("negative_scenarios", [])
     if neg:
         click.echo(f"       Negative scenarios: {len(neg)}")
+
+
+# ── generate-api-test ─────────────────────────────────────────────────────────
+
+@framework.command("generate-api-test")
+@click.option("--story", required=True, type=click.Path(exists=True), help="Path to API story JSON file")
+@click.option("--output-dir", default="tests/api", show_default=True)
+def generate_api_test(story: str, output_dir: str) -> None:
+    """Generate a pytest API test class from an API story file.
+
+    API story files follow the same JSON format as UI stories but include
+    an 'endpoints' array instead of 'steps'.  Use stories/users_api_story.json
+    as a reference template.
+    """
+    parser = StoryParser()
+    gen = APICodeGenerator()
+
+    user_story = parser.parse_story_file(story)
+    story_id = re.sub(r"\W+", "_", user_story.get("id", "generated").lower()).strip("_")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    init_file = output_path / "__init__.py"
+    if not init_file.exists():
+        init_file.write_text("", encoding="utf-8")
+
+    test_file = output_path / f"test_{story_id}.py"
+    source = gen.generate_test_class(user_story)
+
+    try:
+        compile(source, str(test_file), "exec")
+    except SyntaxError as exc:
+        click.echo(click.style(f"  [ERROR] Generated code has a syntax error: {exc}", fg="red"), err=True)
+        raise SystemExit(1) from exc
+
+    test_file.write_text(source, encoding="utf-8")
+
+    click.echo(click.style(f"  [OK] {test_file}", fg="green"))
+    click.echo(f"       Story    : {user_story.get('title', 'Untitled')}")
+    click.echo(f"       Endpoints: {len(user_story.get('endpoints', []))}")
+    neg = user_story.get("negative_scenarios", [])
+    if neg:
+        click.echo(f"       Negative : {len(neg)}")
 
 
 # ── run ───────────────────────────────────────────────────────────────────────

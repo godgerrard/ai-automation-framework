@@ -41,5 +41,5 @@ markers = [
     "checkout: checkout flow tests",
     "payment: payment processing tests",
     "regression: full regression suite",
-    "api: backend API tests",
+    "api: REST API tests (no browser required)",
 ]

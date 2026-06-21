@@ -57,6 +57,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=CONFIG.browser.slow_mo,
         help="Slow down Playwright actions by N milliseconds.",
     )
+    parser.addoption(
+        "--api-url",
+        default="https://jsonplaceholder.typicode.com",
+        help="Base URL for API test suites (default: jsonplaceholder.typicode.com).",
+    )
 
 
 # ── Session-scoped fixtures ───────────────────────────────────────────────────
@@ -74,8 +79,15 @@ def memory() -> MemoryEngine:
 
 @pytest.fixture(scope="session")
 def api(base_url: str) -> APIService:
-    """API client for backend data setup / teardown."""
-    return APIService(base_url)
+    """API client for web-test setup/teardown. Retries transient errors."""
+    return APIService(base_url, max_retries=2)
+
+
+@pytest.fixture(scope="session")
+def api_client(request: pytest.FixtureRequest) -> APIService:
+    """Standalone API client for API test suites. No retries — tests see raw status codes."""
+    url = request.config.getoption("--api-url")
+    return APIService(url, max_retries=0)
 
 
 @pytest.fixture(scope="session")
@@ -140,9 +152,10 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     # Persist failure to memory engine for self-healing
     mem: MemoryEngine | None = item.funcargs.get("memory")
     if mem:
+        is_api_test = item.funcargs.get("page") is None
         mem.record_failure(
             test_name=item.nodeid,
-            selector="unknown",
+            selector="N/A (API test)" if is_api_test else "unknown",
             error=str(report.longrepr)[:500],
         )
 
