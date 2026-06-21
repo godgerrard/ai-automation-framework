@@ -74,8 +74,8 @@ def setup(non_interactive: bool, url: Optional[str], name: Optional[str], browse
     - Scaffolds locators/, pages/, tests/, stories/ skeletons
     """
     click.echo()
-    click.echo(click.style("  AI Automation Framework — Project Setup", bold=True))
-    click.echo(click.style("  ─────────────────────────────────────────", fg="blue"))
+    click.echo(click.style("  AI Automation Framework - Project Setup", bold=True))
+    click.echo(click.style("  -----------------------------------------", fg="blue"))
     click.echo()
 
     # Collect inputs
@@ -508,17 +508,7 @@ def run(
 
     # Generate Allure HTML report if results exist
     if not no_allure and Path(alluredir).exists():
-        allure_cmd = ["allure", "generate", alluredir, "--clean", "-o", "allure-report"]
-        click.echo(f"\nGenerating Allure dashboard: {' '.join(allure_cmd)}")
-        gen_result = subprocess.run(allure_cmd, capture_output=True, text=True)
-        if gen_result.returncode == 0:
-            click.echo(click.style("  Dashboard → allure-report/index.html", fg="green"))
-        else:
-            click.echo(
-                click.style("  [INFO] allure CLI not installed — raw results in: ", fg="yellow") +
-                f"{alluredir}/"
-            )
-            click.echo("  Install allure: scoop install allure (Windows) | brew install allure (Mac)")
+        _generate_allure_report(alluredir)
 
     sys.exit(result.returncode)
 
@@ -869,6 +859,127 @@ def _step_to_page_method_line(action: str, target: str, value: str, desc: str) -
     if action == "select":
         return f'self.select_option("{target}", "{value}"){c}'
     return ""
+
+
+def _generate_allure_report(alluredir: str) -> None:
+    """Try allure CLI first; fall back to pure-Python HTML summary."""
+    import glob
+    import json as _json
+    from datetime import datetime
+
+    # Try the allure CLI (requires Java)
+    try:
+        allure_cmd = ["allure", "generate", alluredir, "--clean", "-o", "allure-report"]
+        gen = subprocess.run(allure_cmd, capture_output=True, text=True, timeout=60)
+        if gen.returncode == 0:
+            click.echo(click.style("  Dashboard  → allure-report/index.html", fg="green"))
+            return
+    except (FileNotFoundError, OSError):
+        pass
+
+    # Pure-Python fallback: parse result JSONs and write a summary HTML
+    results = []
+    for f in glob.glob(f"{alluredir}/*-result.json"):
+        try:
+            with open(f, encoding="utf-8") as fp:
+                data = _json.load(fp)
+            labels = {l["name"]: l["value"] for l in data.get("labels", [])}
+            results.append({
+                "name": data.get("name", "unknown"),
+                "status": data.get("status", "unknown"),
+                "feature": labels.get("feature", "General"),
+                "story": labels.get("story", ""),
+                "severity": labels.get("severity", "normal"),
+                "duration_ms": data.get("stop", 0) - data.get("start", 0),
+                "markers": [l["value"] for l in data.get("labels", []) if l["name"] == "tag"],
+            })
+        except Exception:
+            continue
+
+    if not results:
+        click.echo(click.style("  [INFO] No allure results found.", fg="yellow"))
+        return
+
+    results.sort(key=lambda x: (x["feature"], x["name"]))
+    passed = sum(1 for r in results if r["status"] == "passed")
+    failed = sum(1 for r in results if r["status"] == "failed")
+    total = len(results)
+    total_ms = sum(r["duration_ms"] for r in results)
+    run_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    features: dict = {}
+    for r in results:
+        features.setdefault(r["feature"], []).append(r)
+
+    rows = ""
+    for feat, tests in features.items():
+        f_pass = sum(1 for t in tests if t["status"] == "passed")
+        rows += (
+            f'<tr class="feature-row"><td colspan="5"><b>{feat}</b>'
+            f'&nbsp;<span class="badge badge-pass">{f_pass}/{len(tests)}</span></td></tr>'
+        )
+        for t in tests:
+            cls = "pass" if t["status"] == "passed" else "fail"
+            icon = "&#10003;" if t["status"] == "passed" else "&#10007;"
+            badges = "".join(
+                f'<span class="badge badge-tag">{m}</span>' for m in t["markers"]
+            )
+            rows += (
+                f'<tr class="{cls}"><td><span class="icon-{cls}">{icon}</span></td>'
+                f'<td>{t["name"]}{badges}</td><td>{t["story"]}</td>'
+                f'<td>{t["severity"]}</td><td>{t["duration_ms"]}ms</td></tr>'
+            )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>Test Report</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f6f9;color:#222}}
+header{{background:#1a1a2e;color:#fff;padding:32px 40px}}
+header h1{{font-size:1.8rem;font-weight:700}}
+header p{{opacity:.7;margin-top:4px;font-size:.9rem}}
+.summary{{display:flex;gap:20px;padding:28px 40px;flex-wrap:wrap}}
+.card{{background:#fff;border-radius:10px;padding:22px 28px;box-shadow:0 1px 4px rgba(0,0,0,.08);min-width:140px}}
+.card .num{{font-size:2.4rem;font-weight:800}}
+.card .lbl{{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;opacity:.5;margin-top:2px}}
+.num-pass{{color:#22c55e}}.num-fail{{color:#ef4444}}.num-total{{color:#6366f1}}.num-time{{color:#f59e0b}}
+.progress-bar{{height:8px;background:#e5e7eb;border-radius:4px;margin:0 40px 8px}}
+.progress-fill{{height:100%;border-radius:4px;background:#22c55e}}
+.table-wrap{{margin:0 40px 40px;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}}
+table{{width:100%;border-collapse:collapse}}
+th{{background:#f8fafc;color:#64748b;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;padding:12px 16px;text-align:left;border-bottom:1px solid #e2e8f0}}
+td{{padding:11px 16px;font-size:.875rem;border-bottom:1px solid #f1f5f9;vertical-align:middle}}
+tr.feature-row td{{background:#f8fafc;font-size:.8rem;padding:8px 16px;color:#6366f1;border-top:2px solid #e0e7ff}}
+tr.pass:hover{{background:#f0fdf4}}tr.fail:hover{{background:#fef2f2}}
+.icon-pass{{color:#22c55e;font-weight:700}}.icon-fail{{color:#ef4444;font-weight:700}}
+.badge{{display:inline-block;font-size:.65rem;padding:1px 7px;border-radius:99px;margin-left:6px;font-weight:600;vertical-align:middle}}
+.badge-pass{{background:#dcfce7;color:#15803d}}.badge-fail{{background:#fee2e2;color:#b91c1c}}.badge-tag{{background:#e0e7ff;color:#4338ca}}
+.footer{{text-align:center;padding:20px;font-size:.75rem;color:#94a3b8}}
+</style></head>
+<body>
+<header><h1>Test Report</h1><p>AI Automation Framework &bull; {run_date}</p></header>
+<div class="summary">
+  <div class="card"><div class="num num-total">{total}</div><div class="lbl">Total</div></div>
+  <div class="card"><div class="num num-pass">{passed}</div><div class="lbl">Passed</div></div>
+  <div class="card"><div class="num num-fail">{failed}</div><div class="lbl">Failed</div></div>
+  <div class="card"><div class="num num-time">{total_ms/1000:.1f}s</div><div class="lbl">Duration</div></div>
+</div>
+<div class="progress-bar"><div class="progress-fill" style="width:{passed/total*100:.1f}%"></div></div>
+<div class="table-wrap"><table>
+<thead><tr><th style="width:40px"></th><th>Test</th><th>Story</th><th>Severity</th><th>Duration</th></tr></thead>
+<tbody>{rows}</tbody>
+</table></div>
+<div class="footer">AI Automation Framework v2.0.0 &bull; Playwright + pytest + allure-pytest</div>
+</body></html>"""
+
+    Path("allure-report").mkdir(exist_ok=True)
+    Path("allure-report/index.html").write_text(html, encoding="utf-8")
+    click.echo(click.style("  Dashboard  -> allure-report/index.html", fg="green"))
+    click.echo(
+        click.style("  [INFO] ", fg="yellow") +
+        "Install Java + allure CLI for full interactive Allure dashboard."
+    )
 
 
 def _ensure_init(directory: Path) -> None:
