@@ -59,13 +59,16 @@ Call the CLI once. Do not edit config.json or .env manually.
 
 ```bash
 framework setup \
+  --non-interactive \
   --url "<app-url>" \
+  --name "<short-project-name>" \
   --username "<username>" \
   --password "<password>" \
-  --name "<short-project-name>"
+  --browser chromium
 ```
 
-This writes `.env` and updates `config.json`. No further config editing is needed.
+This writes `.env` (credentials) and `config.json` (URL + browser).
+No further config editing needed.
 
 ### Step 5 — Parse stories
 

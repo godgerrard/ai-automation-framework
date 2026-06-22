@@ -33,7 +33,7 @@ from utils.helpers import (
 
 
 @click.group()
-@click.version_option("2.0.0", prog_name="framework")
+@click.version_option("2.1.0", prog_name="framework")
 def framework() -> None:
     """AI-Augmented Test Automation Framework CLI.
 
@@ -60,7 +60,10 @@ def framework() -> None:
 @click.option("--browser", default=None,
               type=click.Choice(["chromium", "firefox", "webkit"]),
               help="Default browser for Playwright tests")
-def setup(non_interactive: bool, url: Optional[str], name: Optional[str], browser: Optional[str]) -> None:
+@click.option("--username", default=None, help="App username (saved to .env, never committed)")
+@click.option("--password", default=None, help="App password (saved to .env, never committed)")
+def setup(non_interactive: bool, url: Optional[str], name: Optional[str],
+          browser: Optional[str], username: Optional[str], password: Optional[str]) -> None:
     """Interactive wizard: configure a new project and write .env + config.json.
 
     Run this first when onboarding a new application under test.
@@ -85,8 +88,8 @@ def setup(non_interactive: bool, url: Optional[str], name: Optional[str], browse
         app_url = url
         project_name = name
         browser_choice = browser or "chromium"
-        username = ""
-        password = ""
+        username = username or ""
+        password = password or ""
     else:
         app_url = url or click.prompt(
             "  Application URL",
