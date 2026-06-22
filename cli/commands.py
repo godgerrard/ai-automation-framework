@@ -285,10 +285,17 @@ def build(
         )
         raise SystemExit(1)
 
-    # Resolve credentials for auto-login
+    # Resolve credentials for auto-login.
+    # Preference order: explicit flag > project-scoped env var > generic documented var.
+    # "Project-scoped" means <PROJECT>_USERNAME where PROJECT is derived from the story ids.
+    project_prefix = _stories_to_env_prefix(story_files)
     creds: dict | None = None
-    u = username or os.getenv("USERNAME") or _first_env_credential("USERNAME")
-    p = password or os.getenv("PASSWORD") or _first_env_credential("PASSWORD")
+    u = (username
+         or os.getenv(f"{project_prefix}_USERNAME")
+         or os.getenv("FRAMEWORK_USERNAME"))
+    p = (password
+         or os.getenv(f"{project_prefix}_PASSWORD")
+         or os.getenv("FRAMEWORK_PASSWORD"))
     if u and p:
         creds = {"username": u, "password": p}
 
@@ -723,12 +730,22 @@ def _camel_to_snake(name: str) -> str:
 
 
 def _story_to_project_name(story_id: str) -> str:
-    """Derive a short project name from a story ID (e.g. 'login_flow_001' → 'login')."""
+    """Derive a stable, module-safe project name from a story ID.
+
+    Strips trailing pure-numeric segments (e.g. '001', '2') then returns the
+    remainder as-is.  No arbitrary word-count cap.
+
+    Examples:
+        'login_flow_001'           -> 'login_flow'
+        'inventory_page_flow_001'  -> 'inventory_page_flow'
+        'checkout_flow_002'        -> 'checkout_flow'
+        'login'                    -> 'login'
+    """
     parts = story_id.split("_")
-    # Drop trailing numeric segments
+    # Drop trailing purely-numeric segments
     while parts and parts[-1].isdigit():
         parts.pop()
-    return "_".join(parts[:2]) if parts else "app"
+    return "_".join(parts) if parts else "app"
 
 
 def _read_config_url() -> str:
@@ -742,12 +759,17 @@ def _read_config_url() -> str:
     return ""
 
 
-def _first_env_credential(suffix: str) -> str:
-    """Find the first env var that ends with _USERNAME or _PASSWORD."""
-    for key, val in os.environ.items():
-        if key.endswith(f"_{suffix}") and val:
-            return val
-    return ""
+def _stories_to_env_prefix(story_files: list) -> str:
+    """Derive a deterministic, project-scoped env-var prefix from the story file names.
+
+    Takes the first story file, strips the numeric suffix, and uppercases it.
+    E.g. stories/myapp_login_001.json -> 'MYAPP_LOGIN'
+    Falls back to 'PROJECT' if no story files are provided.
+    """
+    if not story_files:
+        return "PROJECT"
+    stem = Path(story_files[0]).stem
+    return _story_to_project_name(stem).upper()
 
 
 def _write_locators(story: dict, project_name: str) -> list[str]:

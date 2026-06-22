@@ -366,7 +366,7 @@ def _action_to_code(action: str, target: str, value: str, desc: str) -> str:
         return f'assert "{value}" in page.locator("{target}").inner_text(){comment}'
     if action == "select":
         return f'page.select_option("{target}", "{value}"){comment}'
-    return f'# TODO: implement step — {action} on "{target}"{comment}'
+    return f'pytest.fail("Unsupported action {action!r} — story step not implemented (target: {target!r})"){comment}'
 
 
 def _camel_to_snake(name: str) -> str:
@@ -624,8 +624,8 @@ class DOMProber:
             try:
                 page.goto(url, wait_until="networkidle", timeout=30_000)
 
-                # Auto-login if we landed on a login page
-                if credentials and self._looks_like_login_page(page.url):
+                # Auto-login if we landed on a login page (URL hint OR password field present)
+                if credentials and self._looks_like_login_page(page.url, page):
                     self._try_login(page, credentials)
                     page.wait_for_load_state("networkidle", timeout=15_000)
 
@@ -641,8 +641,18 @@ class DOMProber:
             finally:
                 browser.close()
 
-    def _looks_like_login_page(self, url: str) -> bool:
-        return any(kw in url.lower() for kw in ("login", "signin", "sign-in", "auth"))
+    def _looks_like_login_page(self, url: str, page: Any = None) -> bool:
+        """Return True if the URL hints at login OR the page has a password input."""
+        url_hint = any(kw in url.lower() for kw in ("login", "signin", "sign-in", "auth"))
+        if url_hint:
+            return True
+        # DOM-based detection: password field present on ANY site
+        if page is not None:
+            try:
+                return page.locator("input[type=password]").count() > 0
+            except Exception:
+                pass
+        return False
 
     def _try_login(self, page: Any, creds: Dict) -> None:
         username = creds.get("username", "")
@@ -694,6 +704,13 @@ class AutoDOMMapper:
         "orders": "/orders", "reports": "/reports",
     }
 
+    # Generic keywords that suggest a click may trigger a page navigation.
+    # These are intentionally application-agnostic.
+    _NAV_TRIGGER_KEYWORDS = (
+        "login", "log in", "sign in", "signin", "submit", "continue",
+        "next", "proceed", "confirm", "finish", "save", "create",
+    )
+
     def __init__(self, base_url: str, credentials: Dict | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.credentials = credentials
@@ -705,6 +722,8 @@ class AutoDOMMapper:
         import copy
         enriched = copy.deepcopy(story)
         current_url = self.base_url
+        # When True the next probe must re-probe (navigation may have occurred)
+        _invalidate_next = False
 
         for step in enriched.get("steps", []):
             action = step.get("action", "")
@@ -715,6 +734,7 @@ class AutoDOMMapper:
                 path = self._resolve_path(target, description)
                 step["target"] = path
                 current_url = self.base_url + path
+                _invalidate_next = False
                 continue
 
             if action == "assert_url":
@@ -723,17 +743,39 @@ class AutoDOMMapper:
                 continue
 
             if "TODO" in (target or ""):
-                elements = self._probe_cached(current_url)
+                elements, final_url = self._probe_cached(current_url, force=_invalidate_next)
+                # Advance current_url if the prober landed somewhere else (e.g. post-login redirect)
+                if final_url and final_url != current_url:
+                    current_url = final_url
                 real_selector = self._best_selector_for_step(elements, action, description, step.get("value", ""))
                 step["target"] = real_selector
+                _invalidate_next = False
+
+            # After a click that looks like a form submission / navigation trigger,
+            # mark that the next probe should not reuse the cached page.
+            if action == "click" and self._is_nav_trigger(description):
+                _invalidate_next = True
 
         return enriched
 
-    def _probe_cached(self, url: str) -> List[Dict]:
-        if url not in self._cache:
+    def _is_nav_trigger(self, description: str) -> bool:
+        """Return True when a click description suggests the page will navigate."""
+        low = description.lower()
+        return any(kw in low for kw in self._NAV_TRIGGER_KEYWORDS)
+
+    def _probe_cached(self, url: str, force: bool = False) -> tuple:
+        """Return (elements, final_url). Re-probes when force=True or url not cached."""
+        if force or url not in self._cache:
             result = self._prober.probe(url, self.credentials)
-            self._cache[url] = result.get("elements", [])
-        return self._cache[url]
+            final_url = result.get("url") or url
+            elements = result.get("elements", [])
+            # Cache under the URL we actually probed
+            self._cache[final_url] = elements
+            # Also cache under the requested URL so future identical requests hit cache
+            if final_url != url:
+                self._cache[url] = elements
+            return elements, final_url
+        return self._cache[url], url
 
     def _resolve_path(self, target: str, description: str) -> str:
         if target and not target.startswith("TODO"):
@@ -920,7 +962,7 @@ class AllureTestGenerator:
             return f'assert "{value}" in page.locator("{target}").inner_text(){comment}'
         if action == "select":
             return f'page.select_option("{target}", "{value}"){comment}'
-        return f'# TODO: {action} on "{target}"{comment}'
+        return f'pytest.fail("Unsupported action {action!r} — story step not implemented (target: {target!r})"){comment}'
 
 
 # ── Project Scaffolder ────────────────────────────────────────────────────────

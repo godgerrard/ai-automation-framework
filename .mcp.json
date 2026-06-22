@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "ai-automation": {
-      "command": "python",
+      "command": "pythonw",
       "args": ["mcp_server/server.py"],
       "cwd": "."
     }
