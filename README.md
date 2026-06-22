@@ -270,7 +270,8 @@ ai-automation-framework/
 │                                     CodeGenerator, ProjectScaffolder
 │
 ├── tests/
-│   └── conftest.py                ← Framework fixtures (page, browser, memory, api)
+│   ├── conftest.py                ← Framework fixtures (page, browser, memory, api)
+│   └── unit/                      ← Framework engine unit tests (206 tests, no browser)
 │
 ├── stories/
 │   └── templates/                 ← Reference story JSON templates
@@ -305,6 +306,21 @@ After a run, the agent delivers:
 | HTML report | `reports/report.html` | Self-contained pytest-html report |
 | Bug report | `bugs.md` | Structured list of application bugs found |
 | Selector memory | `memory/` | Self-healing store — improves future runs |
+
+---
+
+## Credential environment variables
+
+`framework build` resolves credentials in this order — no arbitrary scanning:
+
+| Priority | Variable | Example |
+|---|---|---|
+| 1. CLI flag | `--username` / `--password` | `framework build --username admin --password s3cret` |
+| 2. Project-scoped | `<PROJECT>_USERNAME` / `<PROJECT>_PASSWORD` | `MYAPP_LOGIN_USERNAME=admin` |
+| 3. Generic fallback | `FRAMEWORK_USERNAME` / `FRAMEWORK_PASSWORD` | works across all projects |
+
+The project prefix is derived from the story file names (e.g. `myapp_login_001.json` → `MYAPP_LOGIN`).
+The easiest option for most users: set `FRAMEWORK_USERNAME` and `FRAMEWORK_PASSWORD` in `.env`.
 
 ---
 

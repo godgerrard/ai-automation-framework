@@ -35,6 +35,7 @@ utils/             NaturalLanguageStoryParser, AutoDOMMapper, DOMProber,
                    AllureTestGenerator, CodeGenerator, ProjectScaffolder
 mcp_server/        FastMCP server + DOM inspection tools
 tests/conftest.py  Framework-level pytest fixtures only
+tests/unit/        Framework engine unit tests (no browser, always committable)
 config.py          Configuration loader
 pyproject.toml     Build manifest and CLI entry point
 stories/templates/ Reference story templates (read-only)
