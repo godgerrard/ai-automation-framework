@@ -21,7 +21,7 @@ from utils.helpers import _action_to_code, _infer_action, _slug, is_safe_probe_u
 # ── _url_to_project_name ──────────────────────────────────────────────────────
 
 def test_url_to_project_name_basic():
-    assert _url_to_project_name("https://saucedemo.com") == "saucedemo"
+    assert _url_to_project_name("https://myapp.com") == "myapp"
 
 
 def test_url_to_project_name_strips_www():

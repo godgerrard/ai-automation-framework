@@ -19,14 +19,14 @@
       "id": "step_02",
       "action": "fill",
       "target": "[data-test='username']",
-      "value": "standard_user",
+      "value": "your_username",
       "description": "Enter username — replace selector and value"
     },
     {
       "id": "step_03",
       "action": "fill",
       "target": "[data-test='password']",
-      "value": "secret_sauce",
+      "value": "your_password",
       "description": "Enter password — replace selector and value"
     },
     {

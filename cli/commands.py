@@ -1095,7 +1095,7 @@ def _normalize_base_url(url: str) -> str:
     Examples:
         https://myapp.com/banking/index.htm               ->  https://myapp.com/banking
         https://myapp.com/app/login.html                  ->  https://myapp.com/app
-        https://saucedemo.com                             ->  https://saucedemo.com
+        https://myapp.com                                 ->  https://myapp.com
         https://myapp.com/                                ->  https://myapp.com
     """
     import posixpath as _pp

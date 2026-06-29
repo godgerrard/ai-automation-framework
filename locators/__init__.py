@@ -1,3 +1,3 @@
-from locators.login_locators import LoginLocators
-
-__all__ = ["LoginLocators"]
+# Locator constants are generated per project.
+# Run: framework build
+# Files appear here automatically — do not edit manually.
