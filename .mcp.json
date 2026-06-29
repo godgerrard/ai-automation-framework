@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "ai-automation": {
-      "command": "pythonw",
+      "command": ".venv\\Scripts\\python.exe",
       "args": ["mcp_server/server.py"],
       "cwd": "."
     }

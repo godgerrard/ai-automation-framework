@@ -15,7 +15,7 @@ from cli.commands import (
 )
 
 # utils.helpers private helpers
-from utils.helpers import _action_to_code, _infer_action, _slug
+from utils.helpers import _action_to_code, _infer_action, _slug, is_safe_probe_url
 
 
 # ── _url_to_project_name ──────────────────────────────────────────────────────
@@ -263,3 +263,79 @@ def test_stories_to_env_prefix_uppercase():
         assert result == result.upper()
     finally:
         os.unlink(fname)
+
+
+# ── is_safe_probe_url ─────────────────────────────────────────────────────────
+
+def test_safe_probe_url_accepts_http_localhost():
+    ok, reason = is_safe_probe_url("http://localhost:3000")
+    assert ok is True
+    assert reason == ""
+
+
+def test_safe_probe_url_accepts_https_example():
+    ok, reason = is_safe_probe_url("https://example.com")
+    assert ok is True
+    assert reason == ""
+
+
+def test_safe_probe_url_accepts_http_127_with_path():
+    ok, reason = is_safe_probe_url("http://127.0.0.1:8080/path")
+    assert ok is True
+    assert reason == ""
+
+
+def test_safe_probe_url_rejects_file_scheme():
+    ok, reason = is_safe_probe_url("file:///etc/passwd")
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_javascript_scheme():
+    ok, reason = is_safe_probe_url("javascript:alert(1)")
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_data_scheme():
+    ok, reason = is_safe_probe_url("data:text/html,x")
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_empty_string():
+    ok, reason = is_safe_probe_url("")
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_non_url_string():
+    ok, reason = is_safe_probe_url("not a url")
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_overlength():
+    long_url = "https://example.com/" + "a" * 2048
+    assert len(long_url) > 2048
+    ok, reason = is_safe_probe_url(long_url)
+    assert ok is False
+    assert "2048" in reason
+
+
+def test_safe_probe_url_rejects_non_string():
+    ok, reason = is_safe_probe_url(None)  # type: ignore[arg-type]
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_ftp_scheme():
+    ok, reason = is_safe_probe_url("ftp://files.example.com/pub")
+    assert ok is False
+    assert reason != ""
+
+
+def test_safe_probe_url_rejects_no_netloc():
+    ok, reason = is_safe_probe_url("http://")
+    assert ok is False
+    assert reason != ""

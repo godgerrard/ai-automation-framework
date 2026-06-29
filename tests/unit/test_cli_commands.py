@@ -264,3 +264,200 @@ def test_memory_search_requires_query(runner):
     with runner.isolated_filesystem():
         result = runner.invoke(framework, ["memory", "--action", "search"])
         assert result.exit_code != 0
+
+
+# ── fix-selector: injection safety ───────────────────────────────────────────
+
+def test_fix_selector_regex_backref_inserted_literally(runner):
+    """A selector containing a regex backref like \\g<0> must be written literally,
+    not expanded by the regex substitution engine."""
+    with runner.isolated_filesystem():
+        locator_content = 'LOGIN_BUTTON = "old"\n'
+        Path("locators").mkdir(exist_ok=True)
+        loc_file = Path("locators") / "test_locators.py"
+        loc_file.write_text(locator_content, encoding="utf-8")
+
+        tricky_selector = r"\g<0>"
+        result = runner.invoke(framework, [
+            "fix-selector",
+            "--file", str(loc_file),
+            "--constant", "LOGIN_BUTTON",
+            "--selector", tricky_selector,
+        ])
+        assert result.exit_code == 0, result.output
+        updated = loc_file.read_text(encoding="utf-8")
+        # The literal string \g<0> must appear in the file, not an expanded group
+        assert r"\g<0>" in updated
+
+
+def test_fix_selector_backref_1_inserted_literally(runner):
+    r"""A selector containing \1 must be written literally."""
+    with runner.isolated_filesystem():
+        locator_content = 'SUBMIT_BTN = "old"\n'
+        Path("locators").mkdir(exist_ok=True)
+        loc_file = Path("locators") / "test_locators.py"
+        loc_file.write_text(locator_content, encoding="utf-8")
+
+        tricky_selector = r"\1"
+        result = runner.invoke(framework, [
+            "fix-selector",
+            "--file", str(loc_file),
+            "--constant", "SUBMIT_BTN",
+            "--selector", tricky_selector,
+        ])
+        assert result.exit_code == 0, result.output
+        updated = loc_file.read_text(encoding="utf-8")
+        assert r"\1" in updated
+
+
+def test_fix_selector_rejects_selector_with_double_quote(runner):
+    """A selector containing a double-quote character must be rejected with a non-zero exit."""
+    with runner.isolated_filesystem():
+        locator_content = 'LOGIN_BUTTON = "old"\n'
+        Path("locators").mkdir(exist_ok=True)
+        loc_file = Path("locators") / "test_locators.py"
+        loc_file.write_text(locator_content, encoding="utf-8")
+
+        result = runner.invoke(framework, [
+            "fix-selector",
+            "--file", str(loc_file),
+            "--constant", "LOGIN_BUTTON",
+            "--selector", 'input[name="user"]',
+        ])
+        assert result.exit_code != 0
+
+
+# ── setup: .env sanitization ─────────────────────────────────────────────────
+
+def test_setup_newline_in_username_not_injected(runner):
+    """A username containing an embedded newline + extra key must NOT inject a rogue .env line."""
+    with runner.isolated_filesystem():
+        injected_username = "normaluser\nINJECTED=1"
+        result = runner.invoke(framework, [
+            "setup",
+            "--non-interactive",
+            "--url", "https://example.com",
+            "--name", "testapp",
+            "--username", injected_username,
+            "--password", "somepassword",
+        ])
+        assert result.exit_code == 0, result.output
+        env_content = Path(".env").read_text(encoding="utf-8")
+        lines = env_content.splitlines()
+        # There must be no standalone INJECTED=1 line
+        assert "INJECTED=1" not in lines
+
+
+def test_setup_newline_in_password_not_injected(runner):
+    """A password containing an embedded newline must NOT inject a rogue .env line."""
+    with runner.isolated_filesystem():
+        injected_password = "secret\nINJECTED=evil"
+        result = runner.invoke(framework, [
+            "setup",
+            "--non-interactive",
+            "--url", "https://example.com",
+            "--name", "testapp",
+            "--username", "admin",
+            "--password", injected_password,
+        ])
+        assert result.exit_code == 0, result.output
+        env_content = Path(".env").read_text(encoding="utf-8")
+        lines = env_content.splitlines()
+        assert "INJECTED=evil" not in lines
+
+
+# ── demo ─────────────────────────────────────────────────────────────────────
+
+class _FakeProcess:
+    """Minimal subprocess.CompletedProcess stand-in."""
+    def __init__(self, returncode: int = 0):
+        self.returncode = returncode
+
+
+def test_demo_defaults(runner, monkeypatch):
+    """demo with no args runs 5 subprocesses using SauceDemo defaults."""
+    calls = []
+
+    def fake_run(cmd, env=None, **kwargs):
+        calls.append(cmd)
+        return _FakeProcess(0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = runner.invoke(framework, ["demo"])
+    assert result.exit_code == 0, result.output
+    # Exactly 5 subprocess calls
+    assert len(calls) == 5
+    # Flatten all args to strings for easy searching
+    all_args = [str(a) for c in calls for a in c]
+    assert "https://www.saucedemo.com" in all_args
+    assert "standard_user" in all_args
+    assert "secret_sauce" in all_args
+
+
+def test_demo_custom_url(runner, monkeypatch):
+    """demo --url uses provided values, NOT SauceDemo defaults."""
+    calls = []
+
+    def fake_run(cmd, env=None, **kwargs):
+        calls.append(cmd)
+        return _FakeProcess(0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = runner.invoke(framework, [
+        "demo",
+        "--url", "https://myapp.com",
+        "--username", "u",
+        "--password", "p",
+    ])
+    assert result.exit_code == 0, result.output
+    all_args = [str(a) for c in calls for a in c]
+    # Custom values must appear
+    assert "https://myapp.com" in all_args
+    assert "u" in all_args
+    assert "p" in all_args
+    # SauceDemo defaults must NOT appear in setup call (second call)
+    setup_args = [str(a) for a in calls[1]]
+    assert "https://www.saucedemo.com" not in setup_args
+    assert "standard_user" not in setup_args
+    assert "secret_sauce" not in setup_args
+
+
+def test_demo_headless_flag(runner, monkeypatch):
+    """demo --headless passes --headless to the run step."""
+    calls = []
+
+    def fake_run(cmd, env=None, **kwargs):
+        calls.append(cmd)
+        return _FakeProcess(0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = runner.invoke(framework, ["demo", "--headless"])
+    assert result.exit_code == 0, result.output
+    # The 5th call is the run step
+    run_cmd = [str(a) for a in calls[4]]
+    assert "--headless" in run_cmd
+
+
+def test_demo_fails_on_step_error(runner, monkeypatch):
+    """demo exits with code 1 when a step fails; subsequent steps are not called."""
+    calls = []
+    call_index = [0]
+
+    def fake_run(cmd, env=None, **kwargs):
+        idx = call_index[0]
+        call_index[0] += 1
+        calls.append(cmd)
+        # Fail on the third call (add-story, index 2)
+        if idx == 2:
+            return _FakeProcess(1)
+        return _FakeProcess(0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = runner.invoke(framework, ["demo"])
+    assert result.exit_code == 1
+    # Only 3 calls should have been made (clean, setup, add-story); build and run skipped
+    assert len(calls) == 3

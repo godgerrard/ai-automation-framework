@@ -112,10 +112,14 @@ def setup(non_interactive: bool, url: Optional[str], name: Optional[str],
             username = ""
             password = ""
 
+    # Normalize: strip any file-level path (e.g. /index.htm) so base_url is a
+    # clean directory-level URL that BasePage.navigate() can append paths to.
+    app_url = _normalize_base_url(app_url)
+
     click.echo()
     click.echo(click.style("  Writing configuration…", fg="cyan"))
 
-    # Write .env
+    # Write .env — sanitize values to prevent newline injection
     env_lines: list[str] = []
     env_path = Path(".env")
     if env_path.exists():
@@ -123,13 +127,13 @@ def setup(non_interactive: bool, url: Optional[str], name: Optional[str],
                      if l and not l.startswith(f"{project_name.upper()}_")
                      and not l.startswith("BASE_URL=") and not l.startswith("BROWSER=")]
     env_lines += [
-        f"BASE_URL={app_url}",
-        f"BROWSER={browser_choice}",
+        f"BASE_URL={_sanitize_env_value(app_url)}",
+        f"BROWSER={_sanitize_env_value(browser_choice)}",
     ]
     if username:
-        env_lines.append(f"{project_name.upper()}_USERNAME={username}")
+        env_lines.append(f"{project_name.upper()}_USERNAME={_sanitize_env_value(username)}")
     if password:
-        env_lines.append(f"{project_name.upper()}_PASSWORD={password}")
+        env_lines.append(f"{project_name.upper()}_PASSWORD={_sanitize_env_value(password)}")
     env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     click.echo(click.style("  [written] .env", fg="green"))
 
@@ -409,9 +413,11 @@ def fix_selector(locator_file: str, constant: str, selector: str) -> None:
     path = Path(locator_file)
     source = path.read_text(encoding="utf-8")
 
-    # Match:  CONSTANT_NAME = "old-value"  (single or double quotes)
+    # Match both flat constants and type-annotated class attributes:
+    #   CONSTANT_NAME = "value"
+    #   CONSTANT_NAME: str = "value"
     pattern = re.compile(
-        rf'^(\s*{re.escape(constant)}\s*=\s*)["\']([^"\']*)["\']',
+        rf'^(\s*{re.escape(constant)}(?:\s*:\s*\w+)?\s*=\s*)["\']([^"\']*)["\']',
         re.MULTILINE,
     )
     match = pattern.search(source)
@@ -423,13 +429,26 @@ def fix_selector(locator_file: str, constant: str, selector: str) -> None:
             err=True,
         )
         for line in source.splitlines():
-            m = re.match(r'\s*([A-Z_][A-Z0-9_]+)\s*=', line)
+            m = re.match(r'\s*([A-Z_][A-Z0-9_]+)(?:\s*:\s*\w+)?\s*=', line)
             if m:
                 click.echo(f"    {m.group(1)}", err=True)
         raise SystemExit(1)
 
+    # Reject selectors containing a double-quote — it would break the generated Python string.
+    if '"' in selector:
+        click.echo(
+            click.style("  [ERROR] ", fg="red") +
+            "Selector must not contain a double-quote character (\"). "
+            "Use single quotes inside the selector value instead.",
+            err=True,
+        )
+        raise SystemExit(1)
+
     old_selector = match.group(2)
-    new_source = pattern.sub(rf'\g<1>"{selector}"', source)
+    # Use a function replacement so the selector is inserted literally —
+    # a plain replacement template would expand regex backreferences (e.g. \g<1>, \1)
+    # if they appear inside the user-supplied selector string.
+    new_source = pattern.sub(lambda m: f'{m.group(1)}"{selector}"', source)
     path.write_text(new_source, encoding="utf-8")
 
     click.echo()
@@ -675,6 +694,184 @@ def generate_api_test(story: str, output_dir: str) -> None:
     neg = user_story.get("negative_scenarios", [])
     if neg:
         click.echo(f"       Negative : {len(neg)}")
+
+
+# ── demo ──────────────────────────────────────────────────────────────────────
+
+@framework.command("demo")
+@click.option("--url", default=None, help="App URL to demo (default: SauceDemo public test site)")
+@click.option("--username", default=None, help="Login username")
+@click.option("--password", default=None, help="Login password (prompted if --url given without it)")
+@click.option("--name", default=None, help="Project name (derived from URL by default)")
+@click.option("--headless", is_flag=True, default=False, help="Run browser headless")
+def demo(url: Optional[str], username: Optional[str], password: Optional[str],
+         name: Optional[str], headless: bool) -> None:
+    """Run a full end-to-end login-flow demo: story to test report in one command.
+
+    Zero-config (uses SauceDemo):
+      framework demo
+
+    Your app:
+      framework demo --url https://myapp.com --username admin --password secret
+
+    Runs: clean -> setup -> add-story -> build -> run (5 steps total).
+    """
+    _SAUCEDEMO_URL = "https://www.saucedemo.com"
+    _SAUCEDEMO_USER = "standard_user"
+    _SAUCEDEMO_PASS = "secret_sauce"
+
+    # Resolve URL and credentials
+    if url is None:
+        demo_url = _SAUCEDEMO_URL
+        demo_username = username or _SAUCEDEMO_USER
+        demo_password = password or _SAUCEDEMO_PASS
+    else:
+        demo_url = url
+        demo_username = username
+        demo_password = password
+        # If URL was given without credentials, prompt interactively
+        if demo_username is None:
+            demo_username = click.prompt("  Username")
+        if demo_password is None:
+            demo_password = click.prompt("  Password", hide_input=True)
+
+    # Derive project name
+    project_name = name or _url_to_project_name(demo_url)
+
+    # Build story text
+    story_text = (
+        f"As a {project_name} user I want to log in with valid credentials "
+        f"and see the authenticated area of the application"
+    )
+
+    click.echo()
+    click.echo(click.style("  AI Automation Framework - Demo", bold=True))
+    click.echo(click.style("  ---", fg="blue"))
+    click.echo(f"  URL     : {demo_url}")
+    click.echo(f"  Project : {project_name}")
+    click.echo(f"  Story   : {story_text}")
+    click.echo(click.style("  ---", fg="blue"))
+    click.echo()
+
+    # Define the 5 steps
+    steps = [
+        {
+            "label": "clean",
+            "cmd": [sys.executable, "-m", "cli.commands", "clean", "--yes"],
+        },
+        {
+            "label": "setup",
+            "cmd": [
+                sys.executable, "-m", "cli.commands", "setup",
+                "--non-interactive",
+                "--url", demo_url,
+                "--name", project_name,
+                "--username", demo_username,
+                "--password", demo_password,
+                "--browser", "chromium",
+            ],
+        },
+        {
+            "label": "add-story",
+            "cmd": [sys.executable, "-m", "cli.commands", "add-story", "--text", story_text],
+        },
+        {
+            "label": "build",
+            "cmd": [sys.executable, "-m", "cli.commands", "build"],
+        },
+        {
+            "label": "run",
+            "cmd": (
+                [sys.executable, "-m", "cli.commands", "run", "--headless"]
+                if headless
+                else [sys.executable, "-m", "cli.commands", "run"]
+            ),
+        },
+    ]
+
+    total = len(steps)
+    for i, step in enumerate(steps, start=1):
+        click.echo(click.style(f"  --- Step {i}/{total}: {step['label']} ---", bold=True))
+        result = subprocess.run(step["cmd"], env=os.environ.copy())
+        if result.returncode != 0:
+            click.echo(
+                click.style(f"  [ERROR] Step {i}/{total} ({step['label']}) failed "
+                            f"with exit code {result.returncode}.", fg="red"),
+                err=True,
+            )
+            click.echo(f"  Demo stopped at step {i}/{total}.")
+            raise SystemExit(1)
+        click.echo()
+
+    click.echo(click.style("  Demo complete", bold=True))
+    click.echo("  ---")
+    click.echo("  Report  : allure-report/index.html")
+    click.echo("  Fallback: reports/report.html")
+    click.echo("  ---")
+    click.echo("  To re-run: framework run --headless")
+    click.echo()
+
+
+# ── clean ─────────────────────────────────────────────────────────────────────
+
+@framework.command("clean")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation prompt")
+def clean(yes: bool) -> None:
+    """Wipe all run artifacts so the next run starts completely fresh.
+
+    Removes: allure-results/, allure-report/, reports/, bugs.md,
+             memory/framework_memory.json
+
+    Generated project files (locators/, pages/, tests/workflows/, stories/)
+    are NOT removed — only runtime outputs are cleared.
+
+    \b
+    Use this before a demo or when you want a clean baseline.
+    """
+    import shutil
+
+    targets = [
+        (Path("allure-results"), "directory"),
+        (Path("allure-report"), "directory"),
+        (Path("reports/screenshots"), "directory"),
+        (Path("reports/videos"), "directory"),
+        (Path("reports/report.html"), "file"),
+        (Path("bugs.md"), "file"),
+        (Path("memory/framework_memory.json"), "file"),
+    ]
+
+    existing = [(p, kind) for p, kind in targets if p.exists()]
+
+    if not existing:
+        click.echo(click.style("  Nothing to clean — already fresh.", fg="green"))
+        return
+
+    click.echo()
+    click.echo(click.style("  The following will be removed:", bold=True))
+    for p, _ in existing:
+        click.echo(f"    {p}")
+    click.echo()
+
+    if not yes:
+        if not click.confirm("  Proceed?", default=True):
+            click.echo("  Aborted.")
+            return
+
+    removed = 0
+    for p, kind in existing:
+        try:
+            if kind == "directory":
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
+            click.echo(click.style(f"  [removed] {p}", fg="yellow"))
+            removed += 1
+        except Exception as exc:
+            click.echo(click.style(f"  [ERROR] Could not remove {p}: {exc}", fg="red"), err=True)
+
+    click.echo()
+    click.echo(click.style(f"  Clean complete — {removed} item(s) removed.", fg="green", bold=True))
+    click.echo()
 
 
 # ── memory ────────────────────────────────────────────────────────────────────
@@ -1007,10 +1204,39 @@ tr.pass:hover{{background:#f0fdf4}}tr.fail:hover{{background:#fef2f2}}
     )
 
 
-def _ensure_init(directory: Path) -> None:
+def _normalize_base_url(url: str) -> str:
+    """Strip a file-level path segment from a URL so it can serve as a clean base.
+
+    Examples:
+        https://myapp.com/banking/index.htm               ->  https://myapp.com/banking
+        https://myapp.com/app/login.html                  ->  https://myapp.com/app
+        https://saucedemo.com                             ->  https://saucedemo.com
+        https://myapp.com/                                ->  https://myapp.com
+    """
+    import posixpath as _pp
+    from urllib.parse import urlparse as _up, urlunparse as _uu
+
+    parsed = _up(url.rstrip("/"))
+    last = _pp.basename(parsed.path)
+    if "." in last and not last.startswith("."):
+        new_path = _pp.dirname(parsed.path).rstrip("/") or ""
+        parsed = parsed._replace(path=new_path)
+    return _uu(parsed)
+
+
+def _ensure_init(directory) -> None:
     init = directory / "__init__.py"
     if not init.exists():
         init.write_text("", encoding="utf-8")
+
+
+def _sanitize_env_value(v: str) -> str:
+    """Strip newline and carriage-return characters (and other ASCII control chars) from
+    a value that will be written into a .env file. Without this, an attacker-controlled
+    value like 'secret\\nINJECTED=1' would inject a rogue key into the .env file."""
+    # Remove all ASCII control characters (0x00-0x1f and 0x7f) except for tab (0x09)
+    # which is harmless in .env values. The critical ones are CR (0x0d) and LF (0x0a).
+    return re.sub(r"[\x00-\x08\x0a-\x1f\x7f]", "", v)
 
 
 if __name__ == "__main__":

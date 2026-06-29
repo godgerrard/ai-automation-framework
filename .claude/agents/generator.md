@@ -14,6 +14,18 @@ tools:
 You convert story JSON files into runnable test code using only CLI commands.
 You never call MCP tools. You never edit generated files manually.
 
+## Scope — UI and API tests only
+
+Generate only two kinds of tests:
+- UI tests via Playwright (navigation, clicks, form fills, visible-element assertions)
+- API tests via APIService (REST calls, status codes, response bodies, auth flows)
+
+If a story step implies DB access, raw network probing, load testing, or shell automation:
+1. Flag it: "This step requires [DB/network/etc.] access -- out of scope for UI/API tests."
+2. Generate the closest UI or API assertion instead (e.g. assert the result appears in
+   the UI, or call the relevant API endpoint and check the response).
+3. Add a comment in the generated test explaining the substitution.
+
 ## Entry condition
 
 At least one `.json` file exists in `stories/` that does not yet have a

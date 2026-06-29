@@ -53,6 +53,40 @@ Do NOT ask for anything else yet.
  for testing? These will be saved in .env and never committed to git."
 ```
 
+---
+
+## Testing Scope — UI and API Only
+
+This framework generates exactly two kinds of tests. Everything else is out of scope.
+
+### In scope
+
+| Kind | How |
+|------|-----|
+| **UI tests** | Playwright — navigation, clicks, form fills, assertions on visible text / element visibility / URL |
+| **API tests** | Built-in HTTP client (`services/api_service.py` `APIService`) — REST calls, status codes, response bodies, headers, auth flows (Bearer / API key / Basic) |
+
+### Out of scope — do NOT generate these
+
+| Category | Reason |
+|----------|---------|
+| Direct database access (SQL, MongoDB, Redis, …) | No DB driver ships with this framework; database state is verified through the app's own UI or API |
+| Raw network / socket / port / packet / DNS / TLS-handshake checks | Not application-behaviour testing |
+| Infrastructure, load, performance, or security/penetration scanning | Use a dedicated tool (e.g. k6, OWASP ZAP) |
+| Arbitrary shell or OS automation unrelated to exercising the app under test | Out of scope |
+
+### Required agent behaviour when a request is out of scope
+
+1. **Name the bottleneck plainly.** Example: "Checking that row directly in the database requires DB access — that is not a UI or API test, and this framework does not generate it."
+2. **Offer the in-scope equivalent.** Example: "I can confirm the same outcome by asserting the result appears in the UI after the action, or by calling the relevant API endpoint and checking the response."
+3. **Proceed with the in-scope version once the user agrees.**
+
+After collecting requirements (Steps 1-3 below), if any requested item falls outside UI/API testing, briefly state the scope boundary and offer the equivalent before running setup.
+
+Always reaffirm: the deliverable is runnable UI/API test files the user can re-run later.
+
+---
+
 ### Step 4 — Run the setup wizard
 
 Call the CLI once. Do not edit config.json or .env manually.

@@ -17,6 +17,7 @@ from playwright.async_api import async_playwright
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.memory_engine import MemoryEngine
+from utils.helpers import is_safe_probe_url
 
 _shared_memory = MemoryEngine()
 
@@ -27,6 +28,17 @@ class DOMInspector:
     """Inspect the live DOM of any URL using a headless Chromium instance."""
 
     async def inspect(self, url: str, selector: str = "body") -> dict[str, Any]:
+        # Validate URL before launching any browser
+        safe, reason = is_safe_probe_url(url)
+        if not safe:
+            return {"status": "error", "url": url, "selector": selector, "error": reason}
+        # Validate selector: must be a non-empty string, not over-long
+        if not isinstance(selector, str) or not selector.strip():
+            return {"status": "error", "url": url, "selector": selector,
+                    "error": "selector must be a non-empty string"}
+        if len(selector) > 1024:
+            return {"status": "error", "url": url, "selector": selector,
+                    "error": "selector exceeds maximum allowed length of 1024 characters"}
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -88,6 +100,10 @@ class ApplicationProber:
     """Deep-scan a page to surface its full interactive element tree."""
 
     async def probe(self, url: str, depth: int = 2) -> dict[str, Any]:
+        # Validate URL before launching any browser
+        safe, reason = is_safe_probe_url(url)
+        if not safe:
+            return {"status": "error", "url": url, "error": reason}
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()

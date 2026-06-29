@@ -8,9 +8,39 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# ── URL Safety Helper ─────────────────────────────────────────────────────────
+
+def is_safe_probe_url(url: str) -> tuple[bool, str]:
+    """Return (True, "") if url is safe to hand to a browser/probe, else (False, reason).
+
+    Allows only http/https. Rejects file:, javascript:, data:, ftp:, gopher:, about:,
+    blank, non-string, and over-long (>2048) inputs.
+
+    NOTE: localhost and RFC-1918 private IP addresses are intentionally allowed —
+    testing apps on localhost or internal networks is a primary use case of this
+    framework. Do NOT add blocks for 127.x, 192.168.x, 10.x, etc.
+    """
+    if not isinstance(url, str):
+        return False, "URL must be a string"
+    if not url or not url.strip():
+        return False, "URL must not be empty"
+    if len(url) > 2048:
+        return False, "URL exceeds maximum allowed length of 2048 characters"
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:
+        return False, f"URL could not be parsed: {exc}"
+    if parsed.scheme not in {"http", "https"}:
+        return False, f"Scheme {parsed.scheme!r} is not allowed; only http and https are permitted"
+    if not parsed.netloc:
+        return False, "URL has no host/netloc component"
+    return True, ""
 
 
 # ── Story Parser ──────────────────────────────────────────────────────────────
@@ -538,7 +568,8 @@ class NaturalLanguageStoryParser:
                 {**base, "id": f"step_{num+2:02d}", "action": "click",
                  "target": "TODO__LOGIN_BUTTON", "description": "Click login button"},
                 {**base, "id": f"step_{num+3:02d}", "action": "assert_url",
-                 "target": "/dashboard", "description": "Verify redirect to dashboard"},
+                 "target": "TODO__POST_LOGIN_PATH",
+                 "description": "Verify redirect after login — update target path for your app"},
             ]
 
         if action == "logout":
@@ -546,7 +577,8 @@ class NaturalLanguageStoryParser:
                 {**base, "id": f"step_{num:02d}", "action": "click",
                  "target": "TODO__LOGOUT_LINK", "description": "Click logout"},
                 {**base, "id": f"step_{num+1:02d}", "action": "assert_url",
-                 "target": "/login", "description": "Verify redirect to login"},
+                 "target": "TODO__LOGIN_PATH",
+                 "description": "Verify redirect to login page — update target path for your app"},
             ]
 
         return [{**step, "id": f"step_{num:02d}"}]
@@ -598,23 +630,31 @@ class DOMProber:
             })
             .slice(0, 80)
             .map(el => ({
-                tag:         el.tagName.toLowerCase(),
-                id:          el.id || null,
-                dataTest:    el.getAttribute('data-test') || el.getAttribute('data-testid') || null,
-                ariaLabel:   el.getAttribute('aria-label') || null,
-                placeholder: el.getAttribute('placeholder') || null,
-                text:        (el.innerText || el.textContent || '').trim().slice(0, 80),
-                type:        el.getAttribute('type') || null,
-                name:        el.getAttribute('name') || null,
-                href:        el.getAttribute('href') || null,
-                className:   (el.className || '').toString().slice(0, 100),
+                tag:          el.tagName.toLowerCase(),
+                id:           el.id || null,
+                dataTest:     el.getAttribute('data-test') || el.getAttribute('data-testid') || null,
+                dataTestAttr: el.hasAttribute('data-test') ? 'data-test'
+                              : el.hasAttribute('data-testid') ? 'data-testid' : null,
+                ariaLabel:    el.getAttribute('aria-label') || null,
+                placeholder:  el.getAttribute('placeholder') || null,
+                text:         (el.innerText || el.textContent || '').trim().slice(0, 80),
+                type:         el.getAttribute('type') || null,
+                name:         el.getAttribute('name') || null,
+                href:         el.getAttribute('href') || null,
+                autocomplete: el.getAttribute('autocomplete') || null,
+                className:    (el.className || '').toString().slice(0, 100),
             }));
     }"""
 
     def probe(self, url: str, credentials: Dict | None = None) -> Dict[str, Any]:
-        """Navigate to url, optionally auto-login, return element list."""
+        """Navigate to url, optionally auto-login, return element list.
+
+        Load strategy: tries networkidle first (best for server-rendered apps).
+        Falls back to domcontentloaded + 2 s extra wait for SPAs (React, Angular,
+        Vue) that keep the network alive via WebSockets or polling.
+        """
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
         except ImportError:
             return {"status": "error", "error": "playwright not installed — run: pip install playwright && playwright install"}
 
@@ -622,12 +662,23 @@ class DOMProber:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             try:
-                page.goto(url, wait_until="networkidle", timeout=30_000)
+                # Primary strategy: networkidle
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=20_000)
+                except PWTimeout:
+                    # SPA fallback: domcontentloaded + settle time
+                    logger.debug("networkidle timed out for %s — falling back to domcontentloaded", url)
+                    page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+                    page.wait_for_timeout(2_500)
 
                 # Auto-login if we landed on a login page (URL hint OR password field present)
                 if credentials and self._looks_like_login_page(page.url, page):
                     self._try_login(page, credentials)
-                    page.wait_for_load_state("networkidle", timeout=15_000)
+                    # Wait for post-login navigation to settle
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=10_000)
+                    except PWTimeout:
+                        page.wait_for_timeout(2_000)
 
                 elements: List[Dict] = page.evaluate(self._JS_EXTRACT)
                 return {
@@ -658,24 +709,57 @@ class DOMProber:
         username = creds.get("username", "")
         password = creds.get("password", "")
 
-        for sel in ("[data-test='username']", "#username", "input[name='username']",
-                    "input[type='email']", "[placeholder*='username' i]", "[placeholder*='email' i]"):
-            if page.locator(sel).count() > 0:
-                page.locator(sel).fill(username)
-                break
+        # Username field — broadest possible cascade
+        for sel in (
+            "[data-test='username']", "[data-testid='username']",
+            "#username", "#user", "#email", "#login",
+            "input[name='username']", "input[name='user']",
+            "input[name='email']", "input[name='login']",
+            "input[autocomplete='username']", "input[autocomplete='email']",
+            "input[type='email']",
+            "[placeholder*='username' i]", "[placeholder*='email' i]",
+            "[placeholder*='user name' i]", "[placeholder*='login' i]",
+            "input[type='text']:first-of-type",
+        ):
+            try:
+                if page.locator(sel).count() > 0:
+                    page.locator(sel).first.fill(username)
+                    break
+            except Exception:
+                continue
 
-        for sel in ("[data-test='password']", "#password", "input[name='password']",
-                    "input[type='password']"):
-            if page.locator(sel).count() > 0:
-                page.locator(sel).fill(password)
-                break
+        # Password field — broadest possible cascade
+        for sel in (
+            "[data-test='password']", "[data-testid='password']",
+            "#password", "#pass", "#passwd",
+            "input[name='password']", "input[name='pass']", "input[name='passwd']",
+            "input[autocomplete='current-password']", "input[autocomplete='password']",
+            "input[type='password']",
+            "[placeholder*='password' i]", "[placeholder*='pass' i]",
+        ):
+            try:
+                if page.locator(sel).count() > 0:
+                    page.locator(sel).first.fill(password)
+                    break
+            except Exception:
+                continue
 
-        for sel in ("[data-test='login-button']", "button[type='submit']",
-                    "input[type='submit']", "button:has-text('Login')", "button:has-text('Sign In')",
-                    "button:has-text('Log In')"):
-            if page.locator(sel).count() > 0:
-                page.locator(sel).click()
-                break
+        # Submit button — broadest possible cascade
+        for sel in (
+            "[data-test='login-button']", "[data-testid='login-button']",
+            "[data-test='submit']", "[data-testid='submit']",
+            "button[type='submit']", "input[type='submit']",
+            "button:has-text('Login')", "button:has-text('Log In')",
+            "button:has-text('Sign In')", "button:has-text('Sign in')",
+            "button:has-text('Submit')", "button:has-text('Continue')",
+            "[role='button']:has-text('Login')", "[role='button']:has-text('Sign In')",
+        ):
+            try:
+                if page.locator(sel).count() > 0:
+                    page.locator(sel).first.click()
+                    break
+            except Exception:
+                continue
 
 
 # ── Auto DOM Mapper ───────────────────────────────────────────────────────────
@@ -840,8 +924,10 @@ class AutoDOMMapper:
         return score
 
     def _selector_string(self, el: Dict) -> str:
+        # Use the exact attribute name that was present on the element
         if el.get("dataTest"):
-            return f"[data-test='{el['dataTest']}']"
+            attr = el.get("dataTestAttr") or "data-test"
+            return f"[{attr}='{el['dataTest']}']"
         if el.get("id"):
             return f"#{el['id']}"
         if el.get("ariaLabel"):
@@ -890,11 +976,11 @@ class AllureTestGenerator:
             f'"""',
             "from __future__ import annotations",
             "",
+            "import os",
+            "",
             "import pytest",
             "import allure",
             "from playwright.sync_api import Page",
-            "",
-            f"from pages.{project_name}_page import {_to_class_name(project_name)}Page",
             "",
             "",
             f'@allure.feature("{allure_feature}")',
@@ -912,7 +998,7 @@ class AllureTestGenerator:
         for tag in tags:
             lines.append(f"    @pytest.mark.{tag}")
         lines.append(f"    @allure.title('Happy path — {title[:60]}')")
-        lines.append(f"    def test_happy_path(self, page: Page, memory) -> None:")
+        lines.append(f"    def test_happy_path(self, page: Page, base_url: str, memory) -> None:")
         lines.append(f'        """Happy path for: {title}"""')
 
         for step in steps:
@@ -928,7 +1014,7 @@ class AllureTestGenerator:
             lines += [
                 f"    @allure.title('{neg.get('title', 'Negative scenario')}')",
                 f"    @allure.severity(allure.severity_level.NORMAL)",
-                f"    def test_{name}(self, page: Page, memory) -> None:",
+                f"    def test_{name}(self, page: Page, base_url: str, memory) -> None:",
                 f'        """{neg.get("title", "")}',
                 "",
                 f"        Expected: {expected}",
@@ -948,10 +1034,11 @@ class AllureTestGenerator:
         comment = f"  # {desc}" if desc else ""
 
         if action == "navigate":
-            return f'page.goto(BASE_URL + "{target}"){comment}'
+            # base_url is a pytest fixture injected via conftest.py
+            return f'page.goto(base_url + "{target}"){comment}'
         if action == "fill":
-            val = value or "TODO_VALUE"
-            return f'page.fill("{target}", "{val}"){comment}'
+            val_expr = self._value_expr(value)
+            return f'page.fill("{target}", {val_expr}){comment}'
         if action == "click":
             return f'page.click("{target}"){comment}'
         if action == "assert_url":
@@ -963,6 +1050,21 @@ class AllureTestGenerator:
         if action == "select":
             return f'page.select_option("{target}", "{value}"){comment}'
         return f'pytest.fail("Unsupported action {action!r} — story step not implemented (target: {target!r})"){comment}'
+
+    @staticmethod
+    def _value_expr(value: str) -> str:
+        """Return a Python expression string for a fill value.
+
+        Credential placeholders are resolved from environment variables at
+        test runtime so the generated file never contains hardcoded credentials.
+        """
+        if not value or value.startswith("TODO_USERNAME"):
+            return 'os.getenv("FRAMEWORK_USERNAME", "")'
+        if value.startswith("TODO_PASSWORD"):
+            return 'os.getenv("FRAMEWORK_PASSWORD", "")'
+        if value.startswith("TODO_"):
+            return f'""  # TODO: provide value for {value}'
+        return f'"{value}"'
 
 
 # ── Project Scaffolder ────────────────────────────────────────────────────────
@@ -1129,7 +1231,7 @@ class {cn}Page(BasePage):
                 {"id": "step_02", "action": "fill", "target": "TODO_USERNAME_SELECTOR", "value": "TODO_USERNAME", "description": "Enter username"},
                 {"id": "step_03", "action": "fill", "target": "TODO_PASSWORD_SELECTOR", "value": "TODO_PASSWORD", "description": "Enter password"},
                 {"id": "step_04", "action": "click", "target": "TODO_LOGIN_BUTTON_SELECTOR", "description": "Click login"},
-                {"id": "step_05", "action": "assert_url", "target": "/dashboard", "description": "Verify redirect — update target path"}
+                {"id": "step_05", "action": "assert_url", "target": "TODO__POST_LOGIN_PATH", "description": "Verify redirect after login — update target path for your app"}
             ],
             "expected_outcomes": [
                 "User is redirected to dashboard",
@@ -1164,10 +1266,9 @@ Test suite for: {cn}
 Target URL    : {url}
 
 HOW TO COMPLETE THIS SKELETON
-  1. Update BASE_URL if the login page is not at the root
-  2. Replace TODO_USERNAME / TODO_PASSWORD with real credentials
-     (load from env vars or a secrets file — never hardcode in source)
-  3. Update locators in locators/{sn}_locators.py
+  1. Update locators in locators/{sn}_locators.py with real selectors
+  2. Set credentials in .env: {cn.upper()}_USERNAME / {cn.upper()}_PASSWORD
+  3. The base_url fixture reads from config.json — run 'framework setup' to set it
   4. Add more test classes (inventory, checkout, …) following this pattern
 """
 from __future__ import annotations
@@ -1179,9 +1280,9 @@ from playwright.sync_api import Page
 
 from pages.{sn}_page import {cn}Page
 
-BASE_URL = "{url}"
-VALID_USER = os.getenv("{cn.upper()}_USERNAME", "TODO_USERNAME")
-VALID_PASS = os.getenv("{cn.upper()}_PASSWORD", "TODO_PASSWORD")
+# Credentials loaded from .env — never hardcode
+VALID_USER = os.getenv("{cn.upper()}_USERNAME", "")
+VALID_PASS = os.getenv("{cn.upper()}_PASSWORD", "")
 
 
 @pytest.mark.authentication
@@ -1189,26 +1290,26 @@ VALID_PASS = os.getenv("{cn.upper()}_PASSWORD", "TODO_PASSWORD")
 class Test{cn}Login:
     """Login flows: happy path + common negative scenarios."""
 
-    def test_login_page_loads(self, page: Page, memory) -> None:
-        app = {cn}Page(page, BASE_URL)
+    def test_login_page_loads(self, page: Page, base_url: str, memory) -> None:
+        app = {cn}Page(page, base_url)
         app.navigate_to()
         assert app.is_loaded(), "Login page not visible"
 
-    def test_valid_login_redirects(self, page: Page, memory) -> None:
-        app = {cn}Page(page, BASE_URL)
+    def test_valid_login_redirects(self, page: Page, base_url: str, memory) -> None:
+        app = {cn}Page(page, base_url)
         app.navigate_to()
         app.login(VALID_USER, VALID_PASS)
         assert app.is_logged_in(), "Dashboard not visible after login"
         assert not app.is_error_visible(), "Unexpected error after valid login"
 
-    def test_empty_credentials_show_error(self, page: Page, memory) -> None:
-        app = {cn}Page(page, BASE_URL)
+    def test_empty_credentials_show_error(self, page: Page, base_url: str, memory) -> None:
+        app = {cn}Page(page, base_url)
         app.navigate_to()
         app.login("", "")
         assert app.is_error_visible(), "Expected validation error for empty credentials"
 
-    def test_wrong_password_shows_error(self, page: Page, memory) -> None:
-        app = {cn}Page(page, BASE_URL)
+    def test_wrong_password_shows_error(self, page: Page, base_url: str, memory) -> None:
+        app = {cn}Page(page, base_url)
         app.navigate_to()
         app.login(VALID_USER, "definitely_wrong_password")
         assert app.is_error_visible(), "Expected auth error for wrong password"
@@ -1265,76 +1366,93 @@ class Test{cn}Login:
         }
         return json.dumps(story, indent=2) + "\n"
 
+
     def _api_test_source(self) -> str:
         ts = _timestamp()
         cn = self.class_name
-        sn = self.name
         url = self.url
-        return f'''\
-"""
+        header = f'''"""
 Generated by AI Automation Framework  |  {ts}
-API test suite for: {cn}
-Target URL      : {url}
-
-HOW TO COMPLETE THIS SKELETON
-  1. Update RESPONSE_TIME_MS to reflect your SLA
-  2. Add endpoint-specific tests following the pattern below
-  3. Use APIResponse fluent assertions — see services/api_response.py for the full API
-  4. For authenticated endpoints: client.set_bearer_token(token) before the call
-"""
+API Test suite for: {cn}  —  Target: {url}
+"""'''
+        body = f'''
 from __future__ import annotations
-
 import pytest
-
 from services.api_service import APIService
 
-BASE_URL = "{url}"
-RESPONSE_TIME_MS = 3000
-
-
-@pytest.fixture(scope="module")
-def client() -> APIService:
-    return APIService(BASE_URL, max_retries=0)
-
 
 @pytest.mark.api
-@pytest.mark.smoke
-class Test{cn}Availability:
-    """HTTP-level smoke checks: root reachable, content-type, response time."""
+class Test{cn}Api:
+    """API smoke tests for {cn}."""
 
-    def test_root_returns_200(self, client: APIService) -> None:
-        resp = client.get("/")
+    def test_health_check(self, api_client: APIService) -> None:
+        """Verify the API is reachable."""
+        resp = api_client.get("/")
         resp.assert_ok()
 
-    def test_root_response_time_under_budget(self, client: APIService) -> None:
-        resp = client.get("/")
-        resp.assert_ok().assert_response_time(RESPONSE_TIME_MS)
-
-    def test_root_body_not_empty(self, client: APIService) -> None:
-        resp = client.get("/")
-        resp.assert_ok().assert_not_empty()
-
-
-@pytest.mark.api
-@pytest.mark.regression
-class Test{cn}Endpoints:
-    """Extend this class with endpoint-specific tests for {cn}."""
-
-    def test_nonexistent_path_returns_404(self, client: APIService) -> None:
-        resp = client.get("/nonexistent_path_xyz_99999")
-        resp.assert_not_found()
-
-    # TODO: add endpoint tests below — examples:
-    #
-    # def test_list_users(self, client: APIService) -> None:
-    #     resp = client.get("/users")
-    #     resp.assert_ok()\\
-    #        .assert_json_list_not_empty("data")\\
-    #        .assert_json_list_items_have_keys("data", "id", "email")
-    #
-    # def test_create_user(self, client: APIService) -> None:
-    #     resp = client.post("/users", {{"name": "Test", "email": "test@example.com"}})
-    #     resp.assert_created()\\
-    #        .assert_json_key_exists("id")\\
-    #        .assert_response_time(RESPONSE_TIME_MS)
+    # TODO: add endpoint tests below
+    # def test_list_items(self, api_client: APIService) -> None:
+    #     resp = api_client.get("/items")
+    #     resp.assert_ok()
 '''
+        return header + body
+
+
+# ── Module-level helpers ─────────────────────────────────────────────────────
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _url_path(url: str) -> str:
+    from urllib.parse import urlparse
+    path = urlparse(url).path
+    return path if path else "/"
+
+
+def _camel_to_snake(name: str) -> str:
+    s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
+
+
+def _to_class_name(story_id: str) -> str:
+    return "".join(w.capitalize() for w in re.split(r"[\W_]+", story_id) if w)
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:50]
+
+
+def _action_to_code(action: str, target: str, value: str, desc: str) -> str:
+    comment = f"  # {desc}" if desc else ""
+    if action == "navigate":
+        return f'page.goto(base_url + "{target}"){comment}'
+    if action == "fill":
+        return f'page.fill("{target}", "{value}"){comment}'
+    if action == "click":
+        return f'page.click("{target}"){comment}'
+    if action == "assert_url":
+        return f'page.wait_for_url("**{target}"){comment}'
+    if action == "assert_visible":
+        return f'assert page.locator("{target}").is_visible(){comment}'
+    if action == "assert_text":
+        return f'assert "{value}" in page.locator("{target}").inner_text(){comment}'
+    if action == "select":
+        return f'page.select_option("{target}", "{value}"){comment}'
+    action_r = repr(action)
+    return f'pytest.fail("Unsupported action {action_r}"){comment}'
+
+
+def _infer_action(desc: str) -> str:
+    low = desc.lower()
+    if any(w in low for w in ("click", "press", "tap", "submit", "select")):
+        return "click"
+    if any(w in low for w in ("type", "enter", "fill", "input", "write")):
+        return "fill"
+    if any(w in low for w in ("navigate", "go to", "open", "visit", "load")):
+        return "navigate"
+    if any(w in low for w in ("url", "redirect", "location", "route")):
+        return "assert_url"
+    if any(w in low for w in ("see", "verify", "check", "assert", "visible", "shown")):
+        return "assert_visible"
+    return "assert_visible"

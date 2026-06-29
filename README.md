@@ -6,6 +6,30 @@ and get a fully generated, running test suite with a report — no manual coding
 
 ---
 
+## What this framework tests (and what it doesn't)
+
+This framework generates exactly two kinds of tests:
+
+**UI tests** — driven through a real browser via Playwright: navigate pages, click buttons,
+fill forms, assert visible text, element visibility, and URLs.
+
+**API tests** — HTTP calls via the built-in `APIService`: REST requests, status codes,
+response bodies, headers, and auth flows (Bearer / API key / Basic).
+
+Everything else is out of scope:
+
+| Out of scope | Why / Alternative |
+|---|---|
+| Direct database queries (SQL, MongoDB, Redis, …) | No DB driver ships with this framework. Assert the same data through the app's UI or API instead. |
+| Raw network / socket / port / DNS / TLS checks | Not application-behaviour testing. Use a network scanner if you need this. |
+| Load, performance, or security / penetration testing | Use a dedicated tool (e.g. k6, OWASP ZAP). |
+| Arbitrary shell / OS automation | Out of scope for UI and API test generation. |
+
+When you ask the agent to do something outside this boundary, it will name the limitation
+and offer the closest in-scope equivalent before proceeding.
+
+---
+
 ## How it works
 
 You talk to your AI agent. The agent asks you three questions, then runs everything internally.
@@ -30,6 +54,41 @@ using the framework's CLI and MCP tools. You never touch a test file.
 
 ---
 
+## Quick Demo (two ways)
+
+### Option A — CLI (30 seconds, zero config)
+
+Runs a full login-flow demo against the public SauceDemo test site:
+
+```bash
+# Clone and install
+git clone https://github.com/godgerrard/ai-automation-framework.git
+cd ai-automation-framework
+./setup.sh        # Windows: powershell -ExecutionPolicy Bypass -File setup.ps1
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+# One command: clean -> setup -> story -> build -> run
+framework demo
+```
+
+Your own app:
+
+```bash
+framework demo --url https://myapp.com --username admin --password secret
+```
+
+### Option B — IDE Agent (Claude Code / Cursor / Copilot)
+
+Open the repo in Claude Code and run:
+
+```
+/start
+```
+
+The agent asks three questions (URL, credentials, what to test), then runs the full pipeline and delivers a test report.
+
+---
+
 ## Supported AI agents
 
 Any IDE that supports the Model Context Protocol:
@@ -46,25 +105,40 @@ Any IDE that supports the Model Context Protocol:
 
 ## Installation
 
-**Requirements:** Python 3.10+, Node.js (optional — for Allure CLI)
+**Requirements:** Python 3.10+, Node.js (optional — for full Allure dashboard)
 
 ```bash
 git clone https://github.com/godgerrard/ai-automation-framework.git
 cd ai-automation-framework
+
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS / Linux:
+source .venv/bin/activate
+
 pip install -e .
 playwright install chromium
+
+# Optional: full interactive Allure dashboard (requires Java)
+# Windows: scoop install allure
+# macOS:   brew install allure
 ```
+
+> **No Allure CLI?** The framework generates a standalone HTML fallback report automatically — no Java required for a basic demo.
 
 ---
 
 ## Connect your AI agent (MCP setup)
 
-The framework exposes an MCP server that your IDE connects to.
-Pick your IDE below — copy the config, update the path, and restart.
+The framework ships pre-configured MCP files for every major IDE.
+After cloning, all config files are already in place — just activate your venv and open the repo.
 
 ### Claude Code
 
-Create `.mcp.json` in the repo root (already included):
+`.mcp.json` is already in the repo root — auto-discovered by Claude Code.
+No extra steps required.
 
 ```json
 {
@@ -78,35 +152,57 @@ Create `.mcp.json` in the repo root (already included):
 }
 ```
 
-### Cursor
+Open Claude Code in the repo folder and say: **"I want to test [your app URL]"**
+The `/loop` command orchestrates all four loops automatically.
 
-Add to `~/.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "ai-automation": {
-      "command": "python",
-      "args": ["/absolute/path/to/ai-automation-framework/mcp_server/server.py"]
-    }
-  }
-}
-```
+---
 
 ### GitHub Copilot (VS Code)
 
-Create `.vscode/mcp.json` in the repo:
+`.vscode/mcp.json` is already in the repo — Copilot picks it up automatically when you open the folder.
 
 ```json
 {
   "servers": {
     "ai-automation": {
+      "type": "stdio",
       "command": "python",
       "args": ["${workspaceFolder}/mcp_server/server.py"]
     }
   }
 }
 ```
+
+**Requirements:**
+- VS Code 1.99+ with GitHub Copilot extension
+- Copilot Chat in Agent mode (click the agent icon in the chat panel)
+
+Open Copilot Chat, switch to Agent mode, and say: **"I want to test [your app URL]"**
+The full workflow runs inline — Copilot reads `.github/copilot-instructions.md` for its operating protocol.
+
+---
+
+### Cursor
+
+`.cursor/mcp.json` is already in the repo — Cursor picks it up automatically.
+
+```json
+{
+  "mcpServers": {
+    "ai-automation": {
+      "command": "python",
+      "args": ["mcp_server/server.py"]
+    }
+  }
+}
+```
+
+**Requirements:** Cursor with Agent / Composer mode enabled.
+
+Open Cursor Composer (Cmd/Ctrl+I) and say: **"I want to test [your app URL]"**
+Cursor reads `.cursor/rules/ai-automation.mdc` for the full workflow protocol.
+
+---
 
 ### Windsurf
 
@@ -123,8 +219,48 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 }
 ```
 
-Once connected, open a chat with your AI agent in the repo folder and say:
-**"I want to test [your app URL]"** — the agent takes it from there.
+Windsurf reads `copilot-instructions.md` at the repo root for the agent protocol.
+
+---
+
+## Quick-Start Demo
+
+Pick a public demo app, clone this repo, and run from scratch:
+
+```bash
+# 1. Clean any previous run artifacts
+framework clean --yes
+
+# 2. Set up for SauceDemo (web app with login)
+framework setup --non-interactive \
+  --url https://www.saucedemo.com \
+  --name saucedemo \
+  --username standard_user \
+  --password secret_sauce \
+  --browser chromium
+
+# 3. Add stories
+framework add-story --text "As a user I want to log in with valid credentials and see the product inventory"
+framework add-story --text "As a user I want to add a product to the cart and proceed to checkout"
+
+# 4. Generate test code (probes live DOM)
+framework build
+
+# 5. Run
+framework run --headless
+
+# 6. Open report
+# allure-report/index.html  (or reports/report.html if allure CLI not installed)
+```
+
+**Good public demo apps:**
+
+| App | URL | Type | Auth |
+|---|---|---|---|
+| SauceDemo | https://www.saucedemo.com | Web (React) | Yes — `standard_user` / `secret_sauce` |
+| JSONPlaceholder | https://jsonplaceholder.typicode.com | REST API | No |
+| Restful Booker | https://restful-booker.herokuapp.com | Web + API | Yes — `admin` / `password123` |
+| DemoQA | https://demoqa.com | Web | No |
 
 ---
 
