@@ -75,23 +75,23 @@ Any IDE that supports the Model Context Protocol:
 ```bash
 git clone https://github.com/godgerrard/ai-automation-framework.git
 cd ai-automation-framework
-
-# Create and activate a virtual environment (recommended)
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS / Linux:
-source .venv/bin/activate
-
-pip install -e .
-playwright install chromium
-
-# Optional: full interactive Allure dashboard (requires Java)
-# Windows: scoop install allure
-# macOS:   brew install allure
 ```
 
-> **No Allure CLI?** The framework generates a standalone HTML fallback report automatically — no Java required for a basic demo.
+**Windows** — run the setup script, then activate:
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1
+.venv\Scripts\activate
+```
+
+**macOS / Linux** — run the setup script, then activate:
+```bash
+./setup.sh
+source .venv/bin/activate
+```
+
+The setup script checks Python 3.10+, creates the virtual environment, installs all dependencies, and installs the Chromium browser driver. After activation the `framework` CLI is on your PATH.
+
+> **Allure dashboard (optional):** Install the Allure CLI for a full interactive report — `scoop install allure` (Windows) or `brew install allure` (macOS). Without it the framework generates a standalone HTML fallback report automatically.
 
 ---
 
@@ -109,7 +109,7 @@ No extra steps required.
 {
   "mcpServers": {
     "ai-automation": {
-      "command": "python",
+      "command": ".venv\\Scripts\\python.exe",
       "args": ["mcp_server/server.py"],
       "cwd": "."
     }
@@ -131,8 +131,9 @@ The `/loop` command orchestrates all four loops automatically.
   "servers": {
     "ai-automation": {
       "type": "stdio",
-      "command": "python",
-      "args": ["${workspaceFolder}/mcp_server/server.py"]
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\mcp_server\\server.py"],
+      "env": {}
     }
   }
 }
@@ -155,8 +156,9 @@ The full workflow runs inline — Copilot reads `.github/copilot-instructions.md
 {
   "mcpServers": {
     "ai-automation": {
-      "command": "python",
-      "args": ["mcp_server/server.py"]
+      "command": ".venv\\Scripts\\python.exe",
+      "args": ["mcp_server/server.py"],
+      "cwd": "."
     }
   }
 }
@@ -188,37 +190,37 @@ Windsurf reads `copilot-instructions.md` at the repo root for the agent protocol
 
 ---
 
-## Quick-Start Demo
+## Quick-Start Workflow
 
-Pick a public demo app, clone this repo, and run from scratch:
+After cloning and running setup, test any application in six commands:
 
 ```bash
-# 1. Clean any previous run artifacts
+# 1. Clean any artifacts from a previous run
 framework clean --yes
 
-# 2. Set up for SauceDemo (web app with login)
+# 2. Set up for your application
 framework setup --non-interactive \
-  --url https://www.saucedemo.com \
-  --name saucedemo \
-  --username standard_user \
-  --password secret_sauce \
+  --url https://your-app.com \
+  --name myapp \
+  --username your-username \
+  --password your-password \
   --browser chromium
 
-# 3. Add stories
-framework add-story --text "As a user I want to log in with valid credentials and see the product inventory"
-framework add-story --text "As a user I want to add a product to the cart and proceed to checkout"
+# 3. Add your test requirements in plain English
+framework add-story --text "As a user I want to log in with valid credentials and see the dashboard"
+framework add-story --text "As a user I want to add an item and proceed to checkout"
 
-# 4. Generate test code (probes live DOM)
+# 4. Generate test code (probes live DOM, maps selectors)
 framework build
 
-# 5. Run
+# 5. Run the suite
 framework run --headless
 
 # 6. Open report
-# allure-report/index.html  (or reports/report.html if allure CLI not installed)
+# allure-report/index.html  (or reports/report.html if Allure CLI not installed)
 ```
 
-**Good public demo apps:**
+**Useful public applications for trying the framework:**
 
 | App | URL | Type | Auth |
 |---|---|---|---|
@@ -340,7 +342,11 @@ The agent reads `copilot-instructions.md` to know exactly when and how to call e
 ```
 ai-automation-framework/
 │
+├── setup.sh                       ← One-command environment setup (macOS / Linux)
+├── setup.ps1                      ← One-command environment setup (Windows)
 ├── .mcp.json                      ← MCP server config (Claude Code auto-discovers)
+├── .vscode/mcp.json               ← MCP server config (GitHub Copilot auto-discovers)
+├── .cursor/mcp.json               ← MCP server config (Cursor auto-discovers)
 ├── .claude/
 │   ├── agents/
 │   │   ├── generator.md           ← Loop 1 agent instructions
@@ -372,7 +378,7 @@ ai-automation-framework/
 │
 ├── tests/
 │   ├── conftest.py                ← Framework fixtures (page, browser, memory, api)
-│   └── unit/                      ← Framework engine unit tests (206 tests, no browser)
+│   └── unit/                      ← Framework engine unit tests (223 tests, no browser)
 │
 ├── stories/
 │   └── templates/                 ← Reference story JSON templates

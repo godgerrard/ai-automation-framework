@@ -321,7 +321,7 @@ framework run --headless  # pytest + Allure report
 framework fix-selector    # patch one broken locator
 framework memory --action show    # inspect memory store
 framework memory --action clear   # wipe memory
-framework clean                   # wipe all run artifacts (use before fresh demo)
+framework clean                   # wipe all run artifacts before a fresh run
 ```
 
 ---

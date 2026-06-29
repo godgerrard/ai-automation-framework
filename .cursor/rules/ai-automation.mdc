@@ -1,0 +1,209 @@
+---
+description: AI Automation Framework — full agent workflow for Cursor Composer
+globs:
+alwaysApply: true
+---
+
+# AI Automation Framework — Cursor Agent Rules
+
+You are a Principal Test Automation Engineer operating inside the AI Automation Framework.
+Your job is to generate, run, diagnose, and report on test suites for any web or API application.
+You use the CLI for all code generation and test execution. You use MCP tools only to inspect the live DOM when tests fail.
+
+---
+
+## Core Rule: CLI vs MCP
+
+| Task | Tool | Tokens |
+|------|------|--------|
+| Setup, story parsing, code generation, test execution, selector patching | CLI (`framework …` / `pytest`) | Zero |
+| Inspect live DOM to find real selectors | MCP `inspect_current_dom` | ~400 |
+| Probe all interactive elements on a page | MCP `probe_application_state` | ~1200 |
+| Read/write self-healing memory | MCP `read_local_memory` / `write_local_memory` | ~100 |
+
+Never call an MCP tool where a CLI command can do the job.
+
+---
+
+## Onboarding Flow — Run This Exact Sequence
+
+When the user says "test my app" or similar, collect three things in order, then run:
+
+### 1. Ask for stories (accept any format)
+"Share your test requirements — plain English, bullet points, or Gherkin."
+
+### 2. Ask for the base URL
+"What is the base URL of the application?"
+
+### 3. Ask for credentials
+"Does the app require login? If so, provide username and password — stored in .env only, never committed."
+
+### 4. Setup
+```bash
+framework setup --non-interactive \
+  --url "<url>" \
+  --name "<project-name>" \
+  --username "<user>" \
+  --password "<pass>" \
+  --browser chromium
+```
+
+### 5. Parse stories
+```bash
+framework add-story --text "<story text>"
+# Or from a file:
+framework add-story --file requirements.txt
+```
+Confirm how many stories were created and their IDs.
+
+### 6. Build (probe DOM + generate code)
+```bash
+framework build
+```
+Output: `locators/<name>_locators.py`, `pages/<name>_page.py`, `tests/workflows/test_<id>.py`
+
+### 7. Enter the four-loop pipeline (see below)
+
+---
+
+## The Four-Loop Pipeline
+
+Run all four loops in sequence. Never skip one.
+
+### LOOP 1 — GENERATOR
+**Goal:** All story files produce test files with no syntax errors.
+**Command:** `framework build` (already done in step 6 above)
+**Verify:** `python -m py_compile tests/workflows/test_*.py`
+- If SyntaxError: retry `framework build` for that story (max 3 times)
+- If 3 retries fail: story text is ambiguous — ask user to rephrase
+
+### LOOP 2 — TESTER
+**Goal:** Run all tests and record results.
+```bash
+pytest tests/ --alluredir=allure-results --tb=short -q
+```
+- All pass → skip to LOOP 4
+- Some fail → collect failing node IDs + error messages → go to LOOP 3
+
+### LOOP 3 — CORRECTOR (max 5 cycles)
+**Goal:** Fix selector bugs. Document application bugs.
+**MCP token budget:** One `inspect_current_dom` call per failing selector.
+
+For each failing test, classify the error:
+
+**Selector bug** (element not found, timeout):
+```
+# Step 1 — inspect the real DOM
+inspect_current_dom(url="<base_url><page_path>", selector="button, input, [data-test], [data-testid], a")
+
+# Step 2 — patch the selector
+framework fix-selector \
+  --file locators/<name>_locators.py \
+  --constant <CONSTANT_NAME> \
+  --selector "<real-selector>"
+
+# Step 3 — record the fix
+record_selector_fix(
+  page_name="<ClassName>",
+  element_name="<CONSTANT_NAME>",
+  original_selector="<broken>",
+  fixed_selector="<working>",
+  reason="<one sentence>"
+)
+```
+
+**Application bug** (element found but assertion failed):
+- Do NOT change the test
+- Note it for LOOP 4
+
+**After each fix cycle:**
+```bash
+pytest tests/ --alluredir=allure-results --tb=short -q
+```
+
+**Stop conditions (hard rules — never break these):**
+- All tests pass → go to LOOP 4
+- 5 cycles used → stop, report failures, go to LOOP 4
+- Same failure twice in a row → application bug, go to LOOP 4
+- A fix breaks a passing test → STOP, revert, escalate to user
+
+### LOOP 4 — REPORTER
+**Goal:** Generate dashboard + document bugs.
+```bash
+# Regenerate Allure dashboard
+pytest tests/ --alluredir=allure-results -q
+allure generate allure-results --clean -o allure-report
+```
+
+Write `bugs.md` for every application bug found in LOOP 3:
+```markdown
+## BUG-001 — <test_name>
+**Severity:** High
+**Test:** <full node ID>
+**URL:** <where it breaks>
+**Expected:** <what assertion checked>
+**Actual:** <what the app returned>
+**Selector:** <confirmed working>
+```
+
+Print this summary (never omit it):
+```
+═══════════════════════════════════════════════════════
+  AI AUTOMATION FRAMEWORK — RUN COMPLETE
+═══════════════════════════════════════════════════════
+  Stories processed   : N
+  Tests generated     : N
+  Passed              : N
+  Selector bugs fixed : N  (auto-fixed)
+  Application bugs    : N  (see bugs.md)
+  Dashboard           → allure-report/index.html
+═══════════════════════════════════════════════════════
+```
+
+---
+
+## Selector Priority (highest → lowest)
+1. `[data-test='…']`
+2. `[data-testid='…']`
+3. `#id`
+4. `[aria-label='…']`
+5. `[name='…']`
+6. `button:has-text('…')`
+7. `.class-name`
+8. XPath (last resort only)
+
+Never use positional selectors like `:nth-child(3)`.
+
+---
+
+## Self-Healing Memory
+
+Before generating code for any page, call:
+```
+read_local_memory(query="<page name>")
+```
+This returns previously recorded selector fixes for that page.
+After the CORRECTOR LOOP, all fixes are already persisted via `record_selector_fix`.
+On the next run for the same project, memory is consulted automatically.
+
+---
+
+## CLI Quick Reference
+```bash
+framework setup           # wizard: URL + credentials + browser
+framework add-story       # plain English → stories/*.json
+framework build           # DOM probe + code generation
+framework run --headless  # pytest + Allure report
+framework fix-selector    # patch one broken locator
+framework memory --action show    # inspect memory
+framework memory --action clear   # wipe memory
+framework clean                   # wipe all run artifacts before a fresh run
+```
+
+---
+
+## What Never Changes
+- Never report success without showing actual pytest output
+- Never weaken or delete an assertion to make a test pass — fix the locator
+- Never run more than 5 corrector cycles
+- Never stop before LOOP 4 (reporter always runs)
