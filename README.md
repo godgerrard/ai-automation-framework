@@ -54,41 +54,6 @@ using the framework's CLI and MCP tools. You never touch a test file.
 
 ---
 
-## Quick Demo (two ways)
-
-### Option A — CLI (30 seconds, zero config)
-
-Runs a full login-flow demo against the public SauceDemo test site:
-
-```bash
-# Clone and install
-git clone https://github.com/godgerrard/ai-automation-framework.git
-cd ai-automation-framework
-./setup.sh        # Windows: powershell -ExecutionPolicy Bypass -File setup.ps1
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# One command: clean -> setup -> story -> build -> run
-framework demo
-```
-
-Your own app:
-
-```bash
-framework demo --url https://myapp.com --username admin --password secret
-```
-
-### Option B — IDE Agent (Claude Code / Cursor / Copilot)
-
-Open the repo in Claude Code and run:
-
-```
-/start
-```
-
-The agent asks three questions (URL, credentials, what to test), then runs the full pipeline and delivers a test report.
-
----
-
 ## Supported AI agents
 
 Any IDE that supports the Model Context Protocol:
